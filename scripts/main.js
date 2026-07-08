@@ -281,12 +281,12 @@ async function showDefenderPrompt(data) {
       html.find("[data-cpr-af-action]").on("click", async (event) => {
         event.preventDefault();
         const action = event.currentTarget.dataset.cprAfAction;
-        const key = `${data.attackId}:${action}`;
+        const key = data.attackId;
         if (processedActions.has(key)) return;
         processedActions.add(key);
-        event.currentTarget.disabled = true;
-        await submitDefenderChoice(data, action);
+        html.find("[data-cpr-af-action]").prop("disabled", true);
         html.closest(".app").find(".close").trigger("click");
+        await submitDefenderChoice(data, action);
       });
     },
   }).render(true);
