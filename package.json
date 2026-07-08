@@ -1,0 +1,10 @@
+{
+  "name": "cpr-combat-automatism",
+  "version": "0.1.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "quality": "node --check scripts/main.js && node --test --experimental-test-coverage --test-coverage-include=scripts/main.js --test-coverage-lines=20 --test-coverage-functions=20 --test-coverage-branches=20"
+  }
+}

@@ -11,9 +11,23 @@ let CPRChatClass = null;
 const processedActions = new Set();
 const claimedPrompts = new Set();
 const shownPrompts = new Set();
+const renderingPrompts = new Set();
 const routedPrompts = new Set();
+const knownAttackDeclarations = new Map();
 const pendingAttackGroups = new Map();
 const resolvingAttackGroups = new Set();
+const SOCKET_MESSAGE_TYPES = new Set([
+  "promptClaimed",
+  "routePrompt",
+  "maybeShowPrompt",
+  "showPrompt",
+  "recordChoice",
+  "rollGroupEvasion",
+  "recordGroupEvasion",
+  "resolveNoEvade",
+  "rollEvasion",
+  "resolveAgainstEvasion",
+]);
 
 Hooks.once("ready", async () => {
   if (game.system.id !== SYSTEM_ID) {
@@ -33,7 +47,6 @@ Hooks.once("ready", async () => {
   };
   game.cprAttackFlow = game.cprCombatAutomatism;
   game.socket.on(SOCKET, onSocket);
-  console.log(`${MODULE_ID} | ready`);
 });
 
 Hooks.on("getSceneControlButtons", (controls) => {
@@ -63,7 +76,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
 
 Hooks.on("createChatMessage", async (message) => {
   const declaration = message.getFlag(MODULE_ID, "attackDeclaration");
-  if (!declaration || !game.user.isGM) return;
+  if (!declaration) return;
+  rememberAttackDeclaration(declaration);
+  if (!game.user.isGM) return;
   await routeDefenderPrompt(declaration);
 });
 
@@ -244,7 +259,7 @@ async function createAttackCard(attacker, target, weapon, group) {
   };
 
   const content = await renderTemplate(TEMPLATES.declaration, data);
-  await ChatMessage.create({
+  const message = await ChatMessage.create({
     user: game.user.id,
     speaker: ChatMessage.getSpeaker({ token: attacker.document }),
     content,
@@ -254,6 +269,7 @@ async function createAttackCard(attacker, target, weapon, group) {
       },
     },
   });
+  rememberAttackDeclaration(message.getFlag(MODULE_ID, "attackDeclaration") ?? data);
 
   await dispatchDefenderPrompt(data);
 }
@@ -268,34 +284,42 @@ function pickDefenderUser(actor, { includeGm = true, tokenDocument = null, data 
 }
 
 async function showDefenderPrompt(data) {
-  if (shownPrompts.has(data.attackId)) return;
-  claimPrompt(data.attackId);
-  shownPrompts.add(data.attackId);
+  if (shownPrompts.has(data.attackId) || renderingPrompts.has(data.attackId)) return;
+  renderingPrompts.add(data.attackId);
 
-  const content = await renderTemplate(TEMPLATES.card, data);
-  new Dialog({
-    title: `${data.weaponName}: ${data.targetName}`,
-    content,
-    buttons: {},
-    render: (html) => {
-      html.find("[data-cpr-af-action]").on("click", async (event) => {
-        event.preventDefault();
-        const action = event.currentTarget.dataset.cprAfAction;
-        const key = data.attackId;
-        if (processedActions.has(key)) return;
-        processedActions.add(key);
-        html.find("[data-cpr-af-action]").prop("disabled", true);
-        html.closest(".app").find(".close").trigger("click");
-        await submitDefenderChoice(data, action);
-      });
-    },
-  }).render(true);
+  try {
+    const content = await renderTemplate(TEMPLATES.card, data);
+    const dialog = new Dialog({
+      title: `${data.weaponName}: ${data.targetName}`,
+      content,
+      buttons: {},
+      render: (html) => {
+        html.find("[data-cpr-af-action]").on("click", async (event) => {
+          event.preventDefault();
+          const action = event.currentTarget.dataset.cprAfAction;
+          const key = data.attackId;
+          if (processedActions.has(key)) return;
+          processedActions.add(key);
+          html.find("[data-cpr-af-action]").prop("disabled", true);
+          html.closest(".app").find(".close").trigger("click");
+          await submitDefenderChoice(data, action);
+        });
+      },
+    });
+    dialog.render(true);
+    shownPrompts.add(data.attackId);
+    claimPrompt(data.attackId);
+  } catch (_error) {
+    ui.notifications.error("CPR Combat Automatism could not render the defender prompt.");
+  } finally {
+    renderingPrompts.delete(data.attackId);
+  }
 }
 
 function claimPrompt(attackId) {
   if (claimedPrompts.has(attackId)) return;
   claimedPrompts.add(attackId);
-  game.socket.emit(SOCKET, { type: "promptClaimed", attackId });
+  emitSocket({ type: "promptClaimed", attackId, ownerUserId: game.user.id });
 }
 
 async function dispatchDefenderPrompt(data) {
@@ -306,7 +330,7 @@ async function dispatchDefenderPrompt(data) {
     emitTo(gm.id, "routePrompt", data);
   }
 
-  game.socket.emit(SOCKET, { type: "maybeShowPrompt", data });
+  emitSocket({ type: "maybeShowPrompt", data });
   await maybeShowDefenderPrompt(data);
 }
 
@@ -319,13 +343,6 @@ async function routeDefenderPrompt(data) {
   const ownerIds = game.users
     .filter((user) => user.active && !user.isGM && userOwnsAny(user, docs, data, defender?.document))
     .map((user) => user.id);
-
-  console.log(`${MODULE_ID} | defender owner route`, {
-    attackId: data.attackId,
-    target: data.targetName,
-    ownerIds,
-    actorIds: docs.map((doc) => doc.id),
-  });
 
   if (ownerIds.length > 0) {
     for (const ownerId of ownerIds) emitTo(ownerId, "showPrompt", data);
@@ -431,9 +448,12 @@ async function collectGroupEvasionsOrResolve(groupId, entry) {
 
 async function rollGroupEvasion(data) {
   const evasionTotal = await rollEvasionForData(data);
-  if (!Number.isFinite(evasionTotal)) return;
 
-  const payload = { ...data, evasionTotal };
+  const payload = {
+    ...data,
+    evasionTotal: Number.isFinite(evasionTotal) ? evasionTotal : null,
+    evasionFailed: !Number.isFinite(evasionTotal),
+  };
   if (data.resolverUserId === game.user.id) {
     await recordGroupEvasion(payload);
     return;
@@ -449,7 +469,8 @@ async function recordGroupEvasion(data) {
   entry.evasions ??= new Map();
   entry.evasions.set(data.attackId, data.evasionTotal);
   const evaders = Array.from(entry.choices.values()).filter((choice) => choice.defenderAction === "evade");
-  await simpleMessage(`${data.targetName} Evasion ${data.evasionTotal} (${entry.evasions.size}/${evaders.length}).`);
+  const resultLabel = Number.isFinite(Number(data.evasionTotal)) ? data.evasionTotal : "failed";
+  await simpleMessage(`${data.targetName} Evasion ${resultLabel} (${entry.evasions.size}/${evaders.length}).`);
 
   if (entry.evasions.size >= evaders.length) {
     if (entry.resolvingFinal) return;
@@ -704,7 +725,7 @@ async function resolveToken(sceneId, tokenId, actorId) {
 }
 
 function getActorById(actorId) {
-  return game.actors.get(actorId) ?? Object.values(game.actors.tokens).find((actor) => actor.id === actorId);
+  return game.actors.get(actorId) ?? Object.values(game.actors.tokens ?? {}).find((actor) => actor.id === actorId);
 }
 
 function getDefenderOwnershipDocs(data, defender) {
@@ -875,13 +896,14 @@ function formatDistance(distance) {
 }
 
 async function simpleMessage(content) {
+  const safeContent = escapeHtml(content);
   await ChatMessage.create({
     user: game.user.id,
     content: `
       <div class="rollcard cpr-af-message">
         <div class="rollcard-bottom">
           <div class="cpr-block text-normal">
-            <div class="cpr-af-message-content">${content}</div>
+            <div class="cpr-af-message-content">${safeContent}</div>
           </div>
         </div>
       </div>
@@ -889,24 +911,145 @@ async function simpleMessage(content) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function emitSocket(message) {
+  game.socket.emit(SOCKET, { ...message, senderUserId: game.user.id });
+}
+
 function emitTo(userId, type, data) {
-  game.socket.emit(SOCKET, { userId, type, data });
+  emitSocket({ userId, type, data });
+}
+
+function rememberAttackDeclaration(data) {
+  if (data?.attackId) knownAttackDeclarations.set(data.attackId, foundry.utils.deepClone(data));
+}
+
+async function getKnownAttackDeclaration(attackId) {
+  if (!attackId) return null;
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const cached = knownAttackDeclarations.get(attackId);
+    if (cached) return foundry.utils.deepClone(cached);
+
+    const message = getCollectionValues(game.messages)
+      .find((entry) => entry.getFlag?.(MODULE_ID, "attackDeclaration")?.attackId === attackId);
+    const declaration = message?.getFlag?.(MODULE_ID, "attackDeclaration");
+    if (declaration) {
+      rememberAttackDeclaration(declaration);
+      return foundry.utils.deepClone(declaration);
+    }
+
+    await waitFor(75);
+  }
+
+  return null;
+}
+
+function getCollectionValues(collection) {
+  if (!collection) return [];
+  if (Array.isArray(collection)) return collection;
+  if (Array.isArray(collection.contents)) return collection.contents;
+  if (typeof collection.values === "function") return Array.from(collection.values());
+  return [];
+}
+
+function waitFor(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function validateSocketMessage(message) {
+  if (!message || typeof message !== "object" || !SOCKET_MESSAGE_TYPES.has(message.type)) return null;
+  if (message.userId && message.userId !== game.user.id) return null;
+
+  if (message.type === "promptClaimed") {
+    const declaration = await getKnownAttackDeclaration(message.attackId);
+    if (!declaration) return null;
+    const defender = await resolveToken(declaration.targetSceneId, declaration.targetTokenId, declaration.targetActorId);
+    const docs = getDefenderOwnershipDocs(declaration, defender);
+    const owner = getUserById(message.ownerUserId);
+    if (!owner || !userOwnsAny(owner, docs, declaration, defender?.document)) return null;
+    return { type: message.type, attackId: message.attackId };
+  }
+
+  const data = await getTrustedSocketData(message.data);
+  if (!data) return null;
+
+  if (message.type === "routePrompt" && !game.user.isGM) return null;
+
+  if (["recordChoice", "recordGroupEvasion", "resolveNoEvade", "resolveAgainstEvasion"].includes(message.type)) {
+    const resolver = pickAttackResolver(data);
+    if (resolver !== game.user.id) return null;
+  }
+
+  if (["showPrompt", "rollGroupEvasion", "rollEvasion"].includes(message.type)) {
+    const defender = await resolveToken(data.targetSceneId, data.targetTokenId, data.targetActorId);
+    const docs = getDefenderOwnershipDocs(data, defender);
+    if (!game.user.isGM && !userOwnsAny(game.user, docs, data, defender?.document)) return null;
+  }
+
+  if (message.type === "recordGroupEvasion" && data.resolverUserId && data.resolverUserId !== game.user.id) {
+    return null;
+  }
+
+  return { ...message, data };
+}
+
+async function getTrustedSocketData(data) {
+  if (!data?.attackId) return null;
+
+  const declaration = await getKnownAttackDeclaration(data.attackId);
+  if (!declaration) return null;
+
+  const trusted = {
+    ...declaration,
+    defenderAction: data.defenderAction,
+    evasionTotal: data.evasionTotal,
+    evasionFailed: Boolean(data.evasionFailed),
+    resolverUserId: data.resolverUserId,
+  };
+
+  if (trusted.defenderAction && !["evade", "no-evade"].includes(trusted.defenderAction)) return null;
+  return trusted;
+}
+
+function getUserById(userId) {
+  return game.users.get?.(userId) ?? game.users.find?.((user) => user.id === userId) ?? null;
 }
 
 async function onSocket(message) {
-  if (message.type === "promptClaimed") {
-    claimedPrompts.add(message.attackId);
+  const trusted = await validateSocketMessage(message);
+  if (!trusted) return;
+
+  if (trusted.type === "promptClaimed") {
+    claimedPrompts.add(trusted.attackId);
     return;
   }
 
-  if (message.userId && message.userId !== game.user.id) return;
-  if (message.type === "routePrompt") await routeDefenderPrompt(message.data);
-  if (message.type === "maybeShowPrompt") await maybeShowDefenderPrompt(message.data);
-  if (message.type === "showPrompt") await showDefenderPrompt(message.data);
-  if (message.type === "recordChoice") await recordDefenderChoice(message.data);
-  if (message.type === "rollGroupEvasion") await rollGroupEvasion(message.data);
-  if (message.type === "recordGroupEvasion") await recordGroupEvasion(message.data);
-  if (message.type === "resolveNoEvade") await resolveNoEvade(message.data);
-  if (message.type === "rollEvasion") await rollEvasionAndContinue(message.data);
-  if (message.type === "resolveAgainstEvasion") await resolveAgainstEvasion(message.data);
+  if (trusted.type === "routePrompt") await routeDefenderPrompt(trusted.data);
+  if (trusted.type === "maybeShowPrompt") await maybeShowDefenderPrompt(trusted.data);
+  if (trusted.type === "showPrompt") await showDefenderPrompt(trusted.data);
+  if (trusted.type === "recordChoice") await recordDefenderChoice(trusted.data);
+  if (trusted.type === "rollGroupEvasion") await rollGroupEvasion(trusted.data);
+  if (trusted.type === "recordGroupEvasion") await recordGroupEvasion(trusted.data);
+  if (trusted.type === "resolveNoEvade") await resolveNoEvade(trusted.data);
+  if (trusted.type === "rollEvasion") await rollEvasionAndContinue(trusted.data);
+  if (trusted.type === "resolveAgainstEvasion") await resolveAgainstEvasion(trusted.data);
 }
+
+export const __test__ = {
+  escapeHtml,
+  getActorById,
+  getCollectionValues,
+  getTrustedSocketData,
+  rememberAttackDeclaration,
+  validateSocketMessage,
+  knownAttackDeclarations,
+};
