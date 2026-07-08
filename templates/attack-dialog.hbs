@@ -1,0 +1,26 @@
+<form class="cpr-af cpr-af-dialog">
+  <div class="cpr-af-grid">
+    <label for="cpr-af-weapon">Weapon</label>
+    <select id="cpr-af-weapon" name="weaponId">
+      {{#each weapons as |weapon|}}
+        <option value="{{weapon.id}}" {{#if weapon.selected}}selected{{/if}}>
+          {{weapon.name}}
+        </option>
+      {{/each}}
+    </select>
+  </div>
+
+  <div class="cpr-af-summary">
+    <div><span>Attacker</span><strong>{{attackerName}}</strong></div>
+    <div><span>{{#if isMultiTarget}}Targets{{else}}Target{{/if}}</span><strong>{{targetName}}</strong></div>
+    <div><span>Damage</span><strong data-cpr-af-field="damage">{{selected.damage}}</strong></div>
+    <div><span>Skill</span><strong data-cpr-af-field="skill">{{selected.skill}}</strong></div>
+    <div><span>DV Table</span><strong data-cpr-af-field="table">{{selected.tableName}}</strong></div>
+    <div><span>Distance</span><strong>{{distanceLabel}}</strong></div>
+    <div><span>DV</span><strong data-cpr-af-field="dv">{{dvLabel}}</strong></div>
+  </div>
+
+  {{#if reason}}
+    <p class="cpr-af-warning">{{reason}}</p>
+  {{/if}}
+</form>

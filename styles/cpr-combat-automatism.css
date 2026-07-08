@@ -1,0 +1,85 @@
+.cpr-af-dialog {
+  min-width: 360px;
+}
+
+.cpr-af-grid {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.cpr-af-grid select {
+  width: 100%;
+}
+
+.cpr-af-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.cpr-af-summary div {
+  border: 1px solid rgba(127, 127, 127, 0.28);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+
+.cpr-af-summary span {
+  display: block;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.cpr-af-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.cpr-af-warning {
+  margin: 10px 0 0;
+  padding: 7px 8px;
+  border-left: 3px solid currentColor;
+}
+
+.cpr-af-core-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 12px;
+  padding: 8px 10px 8px 14px;
+}
+
+.cpr-af-card .cpr-block,
+.cpr-af-declaration .cpr-block,
+.cpr-af-message .cpr-block {
+  box-sizing: border-box;
+}
+
+.cpr-af-card .chat-rollTitle-stat,
+.cpr-af-declaration .chat-rollTitle-stat {
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.cpr-af-message-content {
+  padding: 8px 10px 8px 14px;
+}
+
+.cpr-af-core-grid strong {
+  overflow-wrap: anywhere;
+}
+
+.cpr-af-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+}
+
+.cpr-af-actions button {
+  min-width: 0;
+  width: 100%;
+  margin: 0;
+}

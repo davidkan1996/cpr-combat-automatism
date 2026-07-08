@@ -1,0 +1,38 @@
+<div class="rollcard cpr-af-declaration">
+  <div class="rollcard-top">
+    <div class="cpr-block chat-rollTitle-stat">
+      <div class="text-center text-padding-top text-normal text-semi">
+        {{weaponName}}
+      </div>
+      <div class="rollcard-subtitle">
+        <div class="rollcard-subtitle-center text-small">
+          Attack Declared{{#if groupLabel}} {{groupLabel}}{{/if}}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rollcard-bottom">
+    <div class="cpr-block">
+      <div class="cpr-af-core-grid text-small">
+        <span>Attacker</span><strong>{{attackerName}}</strong>
+        <span>Target</span><strong>{{targetName}}</strong>
+        {{#if groupLabel}}
+          <span>Group</span><strong>{{groupLabel}}</strong>
+        {{/if}}
+        <span>Weapon</span><strong>{{weaponName}}</strong>
+        <span>Damage</span><strong>{{damage}}</strong>
+        <span>Skill</span><strong>{{skill}}</strong>
+        <span>Distance</span><strong>{{distanceLabel}}</strong>
+        <span>DV</span><strong>{{dvLabel}}</strong>
+        <span>DV Table</span><strong>{{tableName}}</strong>
+      </div>
+    </div>
+  </div>
+
+  {{#if reason}}
+    <div class="rollcard-bottom">
+      <div class="cpr-block text-small">{{reason}}</div>
+    </div>
+  {{/if}}
+</div>
