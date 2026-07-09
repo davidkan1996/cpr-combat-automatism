@@ -30,6 +30,44 @@ const SOCKET_MESSAGE_TYPES = new Set([
 ]);
 const FIRE_MODE_ROLL_TYPES = new Set(["aimed", "autofire", "suppressive"]);
 const AIMED_LOCATIONS = new Set(["head", "heldItem", "leg"]);
+const SHOTGUN_DV_TABLES = {
+  shell: "DV Shotgun (Shell)",
+  slug: "DV Shotgun (Slug)",
+};
+const STATIC_DV_TABLES = new Map([
+  [normalizeTableName(SHOTGUN_DV_TABLES.shell), 13],
+]);
+const STANDARD_DV_TABLES = new Set([
+  "DV Assault Rifle",
+  "DV Bows & Crossbows",
+  "DV Grenade Launcher",
+  "DV Pistol",
+  "DV Rocket Launcher",
+  "DV Shotgun (Shell)",
+  "DV Shotgun (Slug)",
+  "DV SMG",
+  "DV Sniper Rifle",
+]);
+const WEAPON_TYPE_LABELS = {
+  assaultRifle: "Assault Rifle",
+  bow: "Bows & Crossbows",
+  grenadeLauncher: "Grenade Launcher",
+  heavyMelee: "Heavy Melee Weapon",
+  heavyPistol: "Heavy Pistol",
+  heavySmg: "Heavy SMG",
+  lightMelee: "Light Melee Weapon",
+  martialArts: "Martial Arts",
+  medMelee: "Medium Melee Weapon",
+  medPistol: "Medium Pistol",
+  rocketLauncher: "Rocket Launcher",
+  shotgun: "Shotgun",
+  smg: "SMG",
+  sniperRifle: "Sniper Rifle",
+  thrownWeapon: "Thrown Weapon",
+  unarmed: "Unarmed",
+  vHeavyMelee: "Very Heavy Melee Weapon",
+  vHeavyPistol: "Very Heavy Pistol",
+};
 
 Hooks.once("ready", async () => {
   if (game.system.id !== SYSTEM_ID) {
@@ -102,7 +140,7 @@ async function openAttackDialog() {
     targetCount: targets.length,
     isMultiTarget: targets.length > 1,
     weapons: weapons.map((weapon, index) => ({
-      id: weapon.id,
+      id: String(index),
       name: weapon.name,
       selected: index === 0,
     })),
@@ -119,8 +157,8 @@ async function openAttackDialog() {
       create: {
         label: "Crear ataque",
         callback: async (html) => {
-          const weaponId = html.find("[name='weaponId']").val();
-          await createAttackCards(attacker, targets, weaponId);
+          const weapon = findWeaponBySelection(weapons, getSelectedWeaponId(html));
+          await createAttackCards(attacker, targets, weapon);
         },
       },
       cancel: {
@@ -129,9 +167,13 @@ async function openAttackDialog() {
     },
     default: "create",
     render: (html) => {
+      let weaponViewRequest = 0;
       html.find("[name='weaponId']").on("change", async (event) => {
-        const weapon = weapons.find((item) => item.id === event.currentTarget.value);
+        const request = ++weaponViewRequest;
+        const weapon = findWeaponBySelection(weapons, event.currentTarget.value);
+        if (!weapon) return;
         const view = await buildDialogWeaponView(weapon, attacker, targets);
+        if (request !== weaponViewRequest) return;
         html.find("[data-cpr-af-field='damage']").text(view.damage);
         html.find("[data-cpr-af-field='skill']").text(view.skill);
         html.find("[data-cpr-af-field='table']").text(view.tableName);
@@ -169,8 +211,25 @@ function getSelection() {
 }
 
 function getWeapons(actor) {
-  const weapons = actor.items.filter((item) => item.type === "weapon");
+  const weapons = getCollectionValues(actor.items).filter((item) => item.type === "weapon");
   return weapons.length ? weapons : actor.system?.weapons?.available ?? [];
+}
+
+function findWeaponBySelection(weapons, selection) {
+  const index = Number(selection);
+  if (Number.isInteger(index) && index >= 0 && index < weapons.length) return weapons[index];
+
+  const id = String(selection ?? "");
+  return weapons.find((weapon) => [weapon.id, weapon._id].includes(id)) ?? null;
+}
+
+function getSelectedWeaponId(html) {
+  const value = html.find("[name='weaponId']").val();
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function getItemId(item) {
+  return item?.id ?? item?._id ?? "";
 }
 
 function formatTargetList(targets) {
@@ -206,8 +265,7 @@ async function buildDialogWeaponView(weapon, attacker, targets) {
   };
 }
 
-async function createAttackCards(attacker, targets, weaponId) {
-  const weapon = attacker.actor.items.get(weaponId);
+async function createAttackCards(attacker, targets, weapon) {
   if (!weapon) {
     ui.notifications.warn("Selected weapon was not found on the attacker.");
     return;
@@ -247,8 +305,9 @@ async function createAttackCard(attacker, target, weapon, group) {
     targetActorId: target.actor.id,
     targetBaseActorId: target.document.actorId,
     targetName: target.name,
-    weaponId: weapon.id,
+    weaponId: getItemId(weapon),
     weaponName: weapon.name,
+    weaponTypeLabel: getWeaponTypeLabel(weapon),
     damage: view.damage,
     skill: view.skill,
     distance: view.distance,
@@ -892,10 +951,21 @@ function findEvasionSkill(actor) {
 
 async function calculateDv(weapon, attacker, target) {
   const distance = measureDistance(attacker, target);
-  const baseTableName = weapon.system?.dvTable || inferDvTableName(weapon);
+  const baseTableName = getBaseDvTableName(weapon);
   const tableName = getActiveDvTableName(weapon, attacker?.actor, baseTableName);
   if (!tableName) {
     return { distance, reason: "Weapon has no DV table." };
+  }
+
+  const staticDv = getStaticDv(tableName);
+  if (staticDv !== null) {
+    return {
+      dv: staticDv,
+      distance,
+      tableName,
+      bandLabel: "Fixed DV",
+      reason: "",
+    };
   }
 
   const table = await findDvTable(tableName);
@@ -927,6 +997,19 @@ function getActiveDvTableName(weapon, actor, tableName) {
   return tableName.includes("(Autofire)") ? tableName : `${tableName} (Autofire)`;
 }
 
+function getStaticDv(tableName) {
+  return STATIC_DV_TABLES.get(normalizeTableName(tableName)) ?? null;
+}
+
+function getBaseDvTableName(weapon) {
+  const configuredTable = weapon.system?.dvTable || "";
+  const inferredTable = inferDvTableName(weapon);
+  if (!configuredTable) return inferredTable;
+  if (!inferredTable) return configuredTable;
+  if (isStandardDvTable(configuredTable)) return inferredTable;
+  return configuredTable;
+}
+
 async function findDvTable(tableName) {
   const normalizedName = normalizeTableName(tableName);
   const packs = game.packs.filter((pack) => pack.documentName === "RollTable");
@@ -945,17 +1028,125 @@ async function findDvTable(tableName) {
 }
 
 function inferDvTableName(weapon) {
-  const source = `${weapon.name} ${weapon.system?.weaponType ?? ""} ${weapon.system?.ammoVariety ?? ""}`;
+  const ammoVariety = getWeaponAmmoVariety(weapon);
+  const weaponTypeTable = getWeaponTypeDvTableName(weapon?.system?.weaponType, ammoVariety);
+  if (weaponTypeTable) return weaponTypeTable;
+
+  const source = `${weapon.name} ${weapon.system?.weaponType ?? ""} ${weapon.system?.ammoVariety ?? ""} ${ammoVariety}`;
   const value = normalizeTableName(source);
+  if (value.includes("shotgun")) return getShotgunDvTableName(ammoVariety);
   if (value.includes("sniper")) return "DV Sniper Rifle";
   if (value.includes("assault")) return "DV Assault Rifle";
-  if (value.includes("shotgun")) return "DV Shotgun (Slug)";
   if (value.includes("rocket")) return "DV Rocket Launcher";
   if (value.includes("grenade")) return "DV Grenade Launcher";
   if (value.includes("crossbow") || value.includes("bow")) return "DV Bows & Crossbows";
   if (value.includes("smg")) return "DV SMG";
   if (value.includes("pistol")) return "DV Pistol";
   return "";
+}
+
+function getWeaponTypeDvTableName(weaponType, ammoVariety) {
+  switch (weaponType) {
+    case "assaultRifle":
+      return "DV Assault Rifle";
+    case "bow":
+      return "DV Bows & Crossbows";
+    case "grenadeLauncher":
+      return "DV Grenade Launcher";
+    case "heavyPistol":
+    case "medPistol":
+    case "vHeavyPistol":
+      return "DV Pistol";
+    case "heavySmg":
+    case "smg":
+      return "DV SMG";
+    case "rocketLauncher":
+      return "DV Rocket Launcher";
+    case "shotgun":
+      return getShotgunDvTableName(ammoVariety);
+    case "sniperRifle":
+      return "DV Sniper Rifle";
+    default:
+      return "";
+  }
+}
+
+function getShotgunDvTableName(ammoVariety) {
+  const value = normalizeTableName(ammoVariety);
+  if (value.includes("shell")) return SHOTGUN_DV_TABLES.shell;
+  return SHOTGUN_DV_TABLES.slug;
+}
+
+function isStandardDvTable(tableName) {
+  const normalizedTableName = normalizeTableName(tableName);
+  return Array.from(STANDARD_DV_TABLES).some((standardTable) => normalizeTableName(standardTable) === normalizedTableName);
+}
+
+function getWeaponAmmoVariety(weapon) {
+  const loadedAmmoVariety = getLoadedAmmoVariety(weapon);
+  if (loadedAmmoVariety) return loadedAmmoVariety;
+
+  const ammoVariety = weapon?.system?.ammoVariety;
+  if (Array.isArray(ammoVariety)) return ammoVariety.length === 1 ? ammoVariety[0] : "";
+  return ammoVariety ?? "";
+}
+
+function getLoadedAmmoVariety(weapon) {
+  try {
+    const loadedAmmoProp = weapon?._getLoadedAmmoProp?.("variety");
+    if (loadedAmmoProp) return loadedAmmoProp;
+  } catch (_error) {
+    // Foundry item helpers can depend on actor state; fall through to raw data.
+  }
+
+  try {
+    const [installedAmmo] = weapon?.getInstalledItems?.("ammo") ?? [];
+    const variety = getAmmoVariety(installedAmmo);
+    if (variety) return variety;
+  } catch (_error) {
+    // Some test doubles and legacy items do not expose installed item helpers.
+  }
+
+  const installedAmmo = getInstalledAmmoFromActor(weapon);
+  const installedAmmoVariety = getAmmoVariety(installedAmmo);
+  if (installedAmmoVariety) return installedAmmoVariety;
+
+  const loadedAmmo = weapon?.system?.loadedAmmo;
+  const loadedAmmoVariety = getAmmoVariety(loadedAmmo);
+  if (loadedAmmoVariety) return loadedAmmoVariety;
+
+  const loadedAmmoId = loadedAmmo?.id ?? loadedAmmo?._id;
+  const loadedAmmoItem = getActorItemById(weapon?.actor, loadedAmmoId);
+  return getAmmoVariety(loadedAmmoItem);
+}
+
+function getInstalledAmmoFromActor(weapon) {
+  const installedIds = weapon?.system?.installedItems?.list ?? [];
+  if (!Array.isArray(installedIds)) return null;
+
+  for (const itemId of installedIds) {
+    const item = getActorItemById(weapon?.actor, itemId) ?? game.items?.get?.(itemId);
+    if (item?.type === "ammo" || getAmmoVariety(item)) return item;
+  }
+  return null;
+}
+
+function getActorItemById(actor, itemId) {
+  if (!actor || !itemId) return null;
+  return actor.getOwnedItem?.(itemId)
+    ?? actor.items?.get?.(itemId)
+    ?? getCollectionValues(actor.items).find((item) => [item.id, item._id].includes(itemId))
+    ?? null;
+}
+
+function getAmmoVariety(ammo) {
+  return getPropertyValue(ammo, "system.variety") ?? getPropertyValue(ammo, "variety") ?? "";
+}
+
+function getPropertyValue(source, path) {
+  if (!source || !path) return undefined;
+  if (foundry.utils?.getProperty) return foundry.utils.getProperty(source, path);
+  return path.split(".").reduce((value, key) => value?.[key], source);
 }
 
 function normalizeTableName(value) {
@@ -992,6 +1183,18 @@ function getWeaponDamage(weapon) {
   } catch (_error) {
     return weapon.system?.damage ?? "-";
   }
+}
+
+function getWeaponTypeLabel(weapon) {
+  const weaponType = weapon?.system?.weaponType;
+  if (!weaponType) return weapon?.name ?? "-";
+  return WEAPON_TYPE_LABELS[weaponType] ?? formatCamelCase(weaponType);
+}
+
+function formatCamelCase(value) {
+  return String(value ?? "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/^./, (character) => character.toLocaleUpperCase());
 }
 
 function formatDistance(distance) {
@@ -1158,12 +1361,20 @@ export const __test__ = {
   getAutofireHitMultiplier,
   getActorById,
   getActiveDvTableName,
+  getBaseDvTableName,
+  findWeaponBySelection,
   getCollectionValues,
   getHighestAutofireMultiplier,
+  getLoadedAmmoVariety,
   getNativeRollType,
   getSavedFireType,
   getSavedAimedLocation,
+  getStaticDv,
+  getWeaponAmmoVariety,
   getWeaponAutofireMax,
+  getWeaponTypeLabel,
+  inferDvTableName,
+  formatCamelCase,
   normalizeAimedLocation,
   getTrustedSocketData,
   rememberAttackDeclaration,

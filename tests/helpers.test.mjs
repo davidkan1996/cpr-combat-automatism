@@ -150,10 +150,142 @@ test("getActiveDvTableName uses the autofire DV table when autofire is selected"
   assert.equal(__test__.getActiveDvTableName(weapon, null, "DV SMG"), "DV SMG");
 });
 
+test("findWeaponBySelection resolves selected weapons by dialog index before id", () => {
+  const first = { id: "first-id", name: "First" };
+  const second = { _id: "second-id", name: "Second" };
+
+  assert.equal(__test__.findWeaponBySelection([first, second], "1"), second);
+  assert.equal(__test__.findWeaponBySelection([first, second], "first-id"), first);
+  assert.equal(__test__.findWeaponBySelection([first, second], "second-id"), second);
+  assert.equal(__test__.findWeaponBySelection([first, second], "missing"), null);
+});
+
+test("getBaseDvTableName uses loaded shotgun shell ammo over the configured slug table", () => {
+  const weapon = {
+    name: "Nomad Shotgun",
+    system: {
+      weaponType: "shotgun",
+      dvTable: "DV Shotgun (Slug)",
+      ammoVariety: ["shotgunShell", "shotgunSlug"],
+    },
+    _getLoadedAmmoProp: (prop) => (prop === "variety" ? "shotgunShell" : undefined),
+  };
+
+  assert.equal(__test__.getWeaponAmmoVariety(weapon), "shotgunShell");
+  assert.equal(__test__.inferDvTableName(weapon), "DV Shotgun (Shell)");
+  assert.equal(__test__.getBaseDvTableName(weapon), "DV Shotgun (Shell)");
+});
+
+test("getStaticDv returns DV 13 for shotgun shell without requiring a roll table", () => {
+  assert.equal(__test__.getStaticDv("DV Shotgun (Shell)"), 13);
+  assert.equal(__test__.getStaticDv("DV Shotgun (Slug)"), null);
+});
+
+test("getBaseDvTableName infers shotgun DV from weapon type over stale standard tables and names", () => {
+  const assaultNamedShotgun = {
+    name: "Assault Shotgun",
+    system: {
+      weaponType: "shotgun",
+      dvTable: "DV Assault Rifle",
+      ammoVariety: ["shotgunShell", "shotgunSlug"],
+    },
+    _getLoadedAmmoProp: (prop) => (prop === "variety" ? "shotgunSlug" : undefined),
+  };
+
+  assert.equal(__test__.inferDvTableName(assaultNamedShotgun), "DV Shotgun (Slug)");
+  assert.equal(__test__.getBaseDvTableName(assaultNamedShotgun), "DV Shotgun (Slug)");
+});
+
+test("getLoadedAmmoVariety resolves installed ammo from the owning actor", () => {
+  const ammo = {
+    id: "ammo-1",
+    type: "ammo",
+    system: {
+      variety: "shotgunShell",
+    },
+  };
+  const actor = {
+    items: [ammo],
+  };
+  const weapon = {
+    name: "Nomad Shotgun",
+    actor,
+    system: {
+      weaponType: "shotgun",
+      dvTable: "DV Shotgun (Slug)",
+      installedItems: {
+        list: ["ammo-1"],
+      },
+      ammoVariety: ["shotgunShell", "shotgunSlug"],
+    },
+  };
+
+  assert.equal(__test__.getLoadedAmmoVariety(weapon), "shotgunShell");
+  assert.equal(__test__.getBaseDvTableName(weapon), "DV Shotgun (Shell)");
+});
+
+test("getLoadedAmmoVariety follows the native loaded ammo helper over stale loadedAmmo data", () => {
+  const slugAmmo = {
+    id: "slug-ammo",
+    type: "ammo",
+    system: {
+      variety: "shotgunSlug",
+    },
+  };
+  const actor = {
+    items: [slugAmmo],
+  };
+  const weapon = {
+    name: "Nomad Shotgun",
+    actor,
+    _getLoadedAmmoProp: (prop) => (prop === "variety" ? "shotgunShell" : undefined),
+    system: {
+      weaponType: "shotgun",
+      dvTable: "DV Shotgun (Shell)",
+      loadedAmmo: {
+        id: "slug-ammo",
+      },
+      ammoVariety: ["shotgunShell", "shotgunSlug"],
+    },
+  };
+
+  assert.equal(__test__.getLoadedAmmoVariety(weapon), "shotgunShell");
+  assert.equal(__test__.getBaseDvTableName(weapon), "DV Shotgun (Shell)");
+});
+
+test("getBaseDvTableName keeps slug shotgun DV and custom shotgun tables intact", () => {
+  const slugWeapon = {
+    name: "Nomad Shotgun",
+    system: {
+      weaponType: "shotgun",
+      dvTable: "DV Shotgun (Slug)",
+      ammoVariety: ["shotgunShell", "shotgunSlug"],
+    },
+    _getLoadedAmmoProp: (prop) => (prop === "variety" ? "shotgunSlug" : undefined),
+  };
+  const customWeapon = {
+    name: "Custom Shotgun",
+    system: {
+      weaponType: "shotgun",
+      dvTable: "Custom DV Table",
+      ammoVariety: "shotgunShell",
+    },
+  };
+
+  assert.equal(__test__.getBaseDvTableName(slugWeapon), "DV Shotgun (Slug)");
+  assert.equal(__test__.getBaseDvTableName(customWeapon), "Custom DV Table");
+});
+
 test("getWeaponAutofireMax falls back to system defaults for common autofire weapons", () => {
   assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "assaultRifle" } }), 4);
   assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "heavySmg" } }), 3);
   assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "bow" } }), 0);
+});
+
+test("getWeaponTypeLabel displays the weapon type instead of the weapon name", () => {
+  assert.equal(__test__.getWeaponTypeLabel({ name: "Malorian", system: { weaponType: "heavyPistol" } }), "Heavy Pistol");
+  assert.equal(__test__.getWeaponTypeLabel({ name: "Generic", system: { weaponType: "customWeaponType" } }), "Custom Weapon Type");
+  assert.equal(__test__.getWeaponTypeLabel({ name: "Fallback", system: {} }), "Fallback");
 });
 
 test("applyAutofireMultiplier preloads the damage roll multiplier safely", () => {

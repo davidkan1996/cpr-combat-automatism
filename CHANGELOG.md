@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.7
+
+- Fixed weapon selection in the attack dialog so the declared attack uses the selected weapon instead of falling back to another weapon's DV table.
+- Added shotgun ammo-aware DV handling:
+  - Shotgun Slug uses `DV Shotgun (Slug)`.
+  - Shotgun Shell uses fixed `DV 13` when no system roll table exists.
+- Aligned loaded ammo detection with the native Cyberpunk RED weapon helper.
+- Changed the attack declaration card weapon value to display the weapon type instead of the weapon name.
+- Added regression tests for weapon selection, shotgun shell/slug DV handling, stale standard DV tables, and fixed shell DV.
+
 ## v0.1.6
 
 - Used the attacker's selected fire mode when creating native attack rolls.
