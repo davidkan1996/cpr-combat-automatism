@@ -16,7 +16,7 @@ A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon attacks from 
 Use this manifest URL in Foundry:
 
 ```text
-https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.5/module.json
+https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.6/module.json
 ```
 
 ## Compatibility

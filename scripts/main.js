@@ -704,7 +704,7 @@ function getNativeRollType(actor, item, rollType) {
 function getSavedFireType(actor, item) {
   const itemIds = [item?.id, item?._id].filter(Boolean);
   for (const itemId of itemIds) {
-    const fireType = actor.getFlag?.(game.system.id, `firetype-${itemId}`);
+    const fireType = actor?.getFlag?.(game.system.id, `firetype-${itemId}`);
     if (fireType) return fireType;
   }
   return null;
@@ -892,7 +892,8 @@ function findEvasionSkill(actor) {
 
 async function calculateDv(weapon, attacker, target) {
   const distance = measureDistance(attacker, target);
-  const tableName = weapon.system?.dvTable || inferDvTableName(weapon);
+  const baseTableName = weapon.system?.dvTable || inferDvTableName(weapon);
+  const tableName = getActiveDvTableName(weapon, attacker?.actor, baseTableName);
   if (!tableName) {
     return { distance, reason: "Weapon has no DV table." };
   }
@@ -918,6 +919,12 @@ async function calculateDv(weapon, attacker, target) {
   }
 
   return { distance, tableName: table.name, reason: "Distance is outside this DV table." };
+}
+
+function getActiveDvTableName(weapon, actor, tableName) {
+  if (!tableName) return "";
+  if (getSavedFireType(actor, weapon) !== "autofire") return tableName;
+  return tableName.includes("(Autofire)") ? tableName : `${tableName} (Autofire)`;
 }
 
 async function findDvTable(tableName) {
@@ -1150,6 +1157,7 @@ export const __test__ = {
   getAimedDamageLocation,
   getAutofireHitMultiplier,
   getActorById,
+  getActiveDvTableName,
   getCollectionValues,
   getHighestAutofireMultiplier,
   getNativeRollType,

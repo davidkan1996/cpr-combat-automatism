@@ -139,6 +139,17 @@ test("getAutofireHitMultiplier returns attack margin capped by weapon autofire m
   assert.equal(__test__.getAutofireHitMultiplier(actor, weapon, 17, 17), 1);
 });
 
+test("getActiveDvTableName uses the autofire DV table when autofire is selected", () => {
+  const actor = {
+    getFlag: (_systemId, key) => (key === "firetype-weapon-1" ? "autofire" : null),
+  };
+  const weapon = { id: "weapon-1" };
+
+  assert.equal(__test__.getActiveDvTableName(weapon, actor, "DV SMG"), "DV SMG (Autofire)");
+  assert.equal(__test__.getActiveDvTableName(weapon, actor, "DV SMG (Autofire)"), "DV SMG (Autofire)");
+  assert.equal(__test__.getActiveDvTableName(weapon, null, "DV SMG"), "DV SMG");
+});
+
 test("getWeaponAutofireMax falls back to system defaults for common autofire weapons", () => {
   assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "assaultRifle" } }), 4);
   assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "heavySmg" } }), 3);
