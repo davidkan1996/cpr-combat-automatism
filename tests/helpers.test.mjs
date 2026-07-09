@@ -101,6 +101,99 @@ test("getActorById tolerates missing synthetic token actor map", () => {
   assert.equal(__test__.getActorById("missing"), undefined);
 });
 
+test("getNativeRollType uses the attacker's selected fire mode for attacks", () => {
+  const actor = {
+    getFlag: (_systemId, key) => (key === "firetype-weapon-1" ? "aimed" : null),
+  };
+
+  assert.equal(__test__.getNativeRollType(actor, { id: "weapon-1" }, "attack"), "aimed");
+  assert.equal(__test__.getNativeRollType(actor, { id: "weapon-1" }, "damage"), "damage");
+});
+
+test("getSavedFireType falls back to item _id and ignores unsupported modes", () => {
+  const actor = {
+    getFlag: (_systemId, key) => (key === "firetype-legacy-id" ? "autofire" : null),
+  };
+  const unsupported = {
+    getFlag: () => "burst",
+  };
+
+  assert.equal(__test__.getSavedFireType(actor, { _id: "legacy-id" }), "autofire");
+  assert.equal(__test__.getNativeRollType(unsupported, { id: "weapon-1" }, "attack"), "attack");
+});
+
+test("getAutofireHitMultiplier returns attack margin capped by weapon autofire max", () => {
+  const actor = {
+    getFlag: (_systemId, key) => (key === "firetype-weapon-1" ? "autofire" : null),
+  };
+  const weapon = {
+    id: "weapon-1",
+    system: {
+      fireModes: { autoFire: 3 },
+      weaponType: "smg",
+    },
+  };
+
+  assert.equal(__test__.getAutofireHitMultiplier(actor, weapon, 19, 17), 2);
+  assert.equal(__test__.getAutofireHitMultiplier(actor, weapon, 25, 17), 3);
+  assert.equal(__test__.getAutofireHitMultiplier(actor, weapon, 17, 17), 1);
+});
+
+test("getWeaponAutofireMax falls back to system defaults for common autofire weapons", () => {
+  assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "assaultRifle" } }), 4);
+  assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "heavySmg" } }), 3);
+  assert.equal(__test__.getWeaponAutofireMax({ system: { weaponType: "bow" } }), 0);
+});
+
+test("applyAutofireMultiplier preloads the damage roll multiplier safely", () => {
+  const cprRoll = {
+    isAutofire: true,
+    autofireMultiplier: 1,
+    autofireMultiplierMax: 4,
+    configureAutofire(multiplier, max) {
+      this.autofireMultiplier = multiplier;
+      this.autofireMultiplierMax = max;
+    },
+  };
+
+  __test__.applyAutofireMultiplier(cprRoll, 7);
+
+  assert.equal(cprRoll.autofireMultiplier, 4);
+  assert.equal(cprRoll.autofireMultiplierMax, 4);
+  assert.equal(__test__.getHighestAutofireMultiplier([{ autofireMultiplier: 2 }, { autofireMultiplier: 4 }]), 4);
+});
+
+test("getAimedDamageLocation carries the selected aimed shot location into damage", () => {
+  const actor = {
+    getFlag: (_systemId, key) => {
+      if (key === "firetype-weapon-1") return "aimed";
+      if (key === "aimedLocation") return "head";
+      return null;
+    },
+  };
+  const weapon = { id: "weapon-1" };
+
+  assert.equal(__test__.getAimedDamageLocation(actor, weapon, { location: "leg" }), "leg");
+  assert.equal(__test__.getAimedDamageLocation(actor, weapon, { location: "heldItem" }), "heldItem");
+  assert.equal(__test__.getAimedDamageLocation(actor, weapon, { location: "body" }), "head");
+});
+
+test("applyAimedLocation only updates aimed damage rolls with valid locations", () => {
+  const cprRoll = {
+    isAimed: true,
+    location: "head",
+  };
+
+  __test__.applyAimedLocation(cprRoll, "heldItem");
+  assert.equal(cprRoll.location, "heldItem");
+
+  __test__.applyAimedLocation(cprRoll, "body");
+  assert.equal(cprRoll.location, "heldItem");
+
+  assert.equal(__test__.normalizeAimedLocation("leg"), "leg");
+  assert.equal(__test__.normalizeAimedLocation("body"), null);
+});
+
 test("socket validation rejects unknown message types", async () => {
   const result = await __test__.validateSocketMessage({ type: "deleteEverything", data: declaration });
   assert.equal(result, null);

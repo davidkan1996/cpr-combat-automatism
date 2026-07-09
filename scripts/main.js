@@ -28,6 +28,8 @@ const SOCKET_MESSAGE_TYPES = new Set([
   "rollEvasion",
   "resolveAgainstEvasion",
 ]);
+const FIRE_MODE_ROLL_TYPES = new Set(["aimed", "autofire", "suppressive"]);
+const AIMED_LOCATIONS = new Set(["head", "heldItem", "leg"]);
 
 Hooks.once("ready", async () => {
   if (game.system.id !== SYSTEM_ID) {
@@ -499,7 +501,10 @@ async function resolveAttackGroup(groupId, entry) {
         ? attackRoll.resultTotal >= comparison.target
         : attackRoll.resultTotal > comparison.target;
       if (hit) {
-        hits.push(choice);
+        hits.push({
+          ...choice,
+          autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, comparison.target),
+        });
       } else if (comparison.mode === "dv") {
         await simpleMessage(`${context.actor.name} misses ${choice.targetName} with ${context.weapon.name} (${attackRoll.resultTotal} vs DV ${comparison.target}).`);
       } else {
@@ -515,6 +520,8 @@ async function resolveAttackGroup(groupId, entry) {
     await simpleMessage(`${context.weapon.name} hits: ${hits.map((hit) => hit.targetName).join(", ")}. Rolling damage once.`);
     await rollNative(context.actor, context.weapon, "damage", {
       tokens: await getDamageTokensForHits(hits),
+      autofireMultiplier: getHighestAutofireMultiplier(hits),
+      aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
     });
   } finally {
     pendingAttackGroups.delete(groupId);
@@ -597,6 +604,8 @@ async function resolveNoEvade(data) {
   if (attackRoll.resultTotal >= dv) {
     await rollNative(context.actor, context.weapon, "damage", {
       tokens: await getDamageTokensForHits([data]),
+      autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, dv),
+      aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
     });
   } else {
     await simpleMessage(`${context.actor.name} misses ${data.targetName} with ${context.weapon.name} (${attackRoll.resultTotal} vs DV ${dv}).`);
@@ -644,27 +653,32 @@ async function resolveAgainstEvasion(data) {
   if (attackRoll.resultTotal > evasionTotal) {
     await rollNative(context.actor, context.weapon, "damage", {
       tokens: await getDamageTokensForHits([data]),
+      autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, evasionTotal),
+      aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
     });
   } else {
     await simpleMessage(`${data.targetName} evades ${context.weapon.name} (${attackRoll.resultTotal} vs Evasion ${evasionTotal}).`);
   }
 }
 
-async function rollNative(actor, item, rollType, { tokens = [] } = {}) {
+async function rollNative(actor, item, rollType, { tokens = [], autofireMultiplier = null, aimedLocation = null } = {}) {
   if (!CPRChatClass) {
     ui.notifications.error("CPR Combat Automatism native roll adapter is not available.");
     return null;
   }
 
   const extraData = {};
-  const savedFireType = actor.getFlag(game.system.id, `firetype-${item.id}`);
+  const savedFireType = getSavedFireType(actor, item);
+  const nativeRollType = getNativeRollType(actor, item, rollType);
   if (rollType === "damage" && savedFireType) extraData.damageType = savedFireType;
 
-  let cprRoll = item.createRoll(rollType, actor, extraData);
+  let cprRoll = item.createRoll(nativeRollType, actor, extraData);
   if (!cprRoll) {
-    ui.notifications.warn(`Could not create native ${rollType} roll for ${item.name}.`);
+    ui.notifications.warn(`Could not create native ${nativeRollType} roll for ${item.name}.`);
     return null;
   }
+  if (rollType === "damage") applyAutofireMultiplier(cprRoll, autofireMultiplier);
+  if (rollType === "damage") applyAimedLocation(cprRoll, aimedLocation ?? getSavedAimedLocation(actor));
 
   const keepRolling = await cprRoll.handleRollDialog({ ctrlKey: false, type: MODULE_ID }, actor, item);
   if (!keepRolling) return null;
@@ -675,7 +689,91 @@ async function rollNative(actor, item, rollType, { tokens = [] } = {}) {
   cprRoll.entityData.item = item.id;
   cprRoll.entityData.tokens = rollType === "damage" ? tokens : [];
   await CPRChatClass.RenderRollCard(cprRoll);
+  if (nativeRollType === "aimed" && cprRoll.location) {
+    await actor.setFlag(game.system.id, "aimedLocation", cprRoll.location);
+  }
   return cprRoll;
+}
+
+function getNativeRollType(actor, item, rollType) {
+  if (rollType !== "attack") return rollType;
+  const savedFireType = getSavedFireType(actor, item);
+  return FIRE_MODE_ROLL_TYPES.has(savedFireType) ? savedFireType : rollType;
+}
+
+function getSavedFireType(actor, item) {
+  const itemIds = [item?.id, item?._id].filter(Boolean);
+  for (const itemId of itemIds) {
+    const fireType = actor.getFlag?.(game.system.id, `firetype-${itemId}`);
+    if (fireType) return fireType;
+  }
+  return null;
+}
+
+function getAutofireHitMultiplier(actor, item, attackTotal, targetTotal) {
+  if (getNativeRollType(actor, item, "attack") !== "autofire") return null;
+
+  const margin = Number(attackTotal) - Number(targetTotal);
+  if (!Number.isFinite(margin)) return null;
+
+  const max = getWeaponAutofireMax(item);
+  return clampAutofireMultiplier(margin, max);
+}
+
+function getWeaponAutofireMax(item) {
+  const weaponMax = Number(item?.system?.fireModes?.autoFire);
+  if (Number.isFinite(weaponMax) && weaponMax > 0) return weaponMax;
+  if (item?.system?.weaponType === "assaultRifle") return 4;
+  if (["smg", "heavySmg"].includes(item?.system?.weaponType)) return 3;
+  return 0;
+}
+
+function clampAutofireMultiplier(multiplier, max) {
+  const value = Math.max(1, Math.floor(Number(multiplier)));
+  const limit = Math.floor(Number(max));
+  return Number.isFinite(limit) && limit > 0 ? Math.min(value, limit) : value;
+}
+
+function getHighestAutofireMultiplier(hits) {
+  const multipliers = hits
+    .map((hit) => Number(hit.autofireMultiplier))
+    .filter(Number.isFinite);
+  return multipliers.length > 0 ? Math.max(...multipliers) : null;
+}
+
+function applyAutofireMultiplier(cprRoll, multiplier) {
+  if (!Number.isFinite(Number(multiplier)) || !cprRoll?.isAutofire) return;
+  const configuredMax = Number(cprRoll.autofireMultiplierMax);
+  const max = Number.isFinite(configuredMax) && configuredMax > 0
+    ? configuredMax
+    : Number(multiplier);
+  const safeMultiplier = clampAutofireMultiplier(multiplier, max);
+
+  if (typeof cprRoll.configureAutofire === "function") {
+    cprRoll.configureAutofire(safeMultiplier, max);
+    return;
+  }
+
+  cprRoll.autofireMultiplier = safeMultiplier;
+}
+
+function getAimedDamageLocation(actor, item, attackRoll) {
+  if (getNativeRollType(actor, item, "attack") !== "aimed") return null;
+  return normalizeAimedLocation(attackRoll?.location) ?? getSavedAimedLocation(actor);
+}
+
+function getSavedAimedLocation(actor) {
+  return normalizeAimedLocation(actor.getFlag?.(game.system.id, "aimedLocation"));
+}
+
+function normalizeAimedLocation(location) {
+  return AIMED_LOCATIONS.has(location) ? location : null;
+}
+
+function applyAimedLocation(cprRoll, location) {
+  const safeLocation = normalizeAimedLocation(location);
+  if (!safeLocation || !cprRoll?.isAimed) return;
+  cprRoll.location = safeLocation;
 }
 
 async function getDamageTokensForHits(hits) {
@@ -1046,8 +1144,19 @@ async function onSocket(message) {
 
 export const __test__ = {
   escapeHtml,
+  applyAimedLocation,
+  applyAutofireMultiplier,
+  clampAutofireMultiplier,
+  getAimedDamageLocation,
+  getAutofireHitMultiplier,
   getActorById,
   getCollectionValues,
+  getHighestAutofireMultiplier,
+  getNativeRollType,
+  getSavedFireType,
+  getSavedAimedLocation,
+  getWeaponAutofireMax,
+  normalizeAimedLocation,
   getTrustedSocketData,
   rememberAttackDeclaration,
   validateSocketMessage,
