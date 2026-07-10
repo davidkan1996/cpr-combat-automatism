@@ -1,5 +1,6 @@
 const MODULE_ID = "cpr-combat-automatism";
 const SYSTEM_ID = "cyberpunk-red-core";
+const DIWAKO_CPRED_ADDITIONS_ID = "diwako-cpred-additions";
 const SOCKET = `module.${MODULE_ID}`;
 const TEMPLATES = {
   dialog: `modules/${MODULE_ID}/templates/attack-dialog.hbs`,
@@ -16,6 +17,7 @@ const routedPrompts = new Set();
 const knownAttackDeclarations = new Map();
 const pendingAttackGroups = new Map();
 const resolvingAttackGroups = new Set();
+const pendingNativeResultSuppressions = new Map();
 const SOCKET_MESSAGE_TYPES = new Set([
   "promptClaimed",
   "routePrompt",
@@ -30,6 +32,7 @@ const SOCKET_MESSAGE_TYPES = new Set([
 ]);
 const FIRE_MODE_ROLL_TYPES = new Set(["aimed", "autofire", "suppressive"]);
 const AIMED_LOCATIONS = new Set(["head", "heldItem", "leg"]);
+const CONTESTED_DEFENDER_ACTIONS = new Set(["evade", "concentration"]);
 const SHOTGUN_DV_TABLES = {
   shell: "DV Shotgun (Shell)",
   slug: "DV Shotgun (Slug)",
@@ -115,9 +118,12 @@ Hooks.on("getSceneControlButtons", (controls) => {
 });
 
 Hooks.on("createChatMessage", async (message) => {
+  if (await maybeSuppressNativeResultMessage(message)) return;
+
   const declaration = message.getFlag(MODULE_ID, "attackDeclaration");
   if (!declaration) return;
   rememberAttackDeclaration(declaration);
+  if (shouldSkipDefenderPrompt(declaration)) return;
   if (!game.user.isGM) return;
   await routeDefenderPrompt(declaration);
 });
@@ -271,19 +277,29 @@ async function createAttackCards(attacker, targets, weapon) {
     return;
   }
 
+  const isSuppressive = isSuppressiveFire(attacker.actor, weapon);
   const groupAttackId = foundry.utils.randomID();
   const groupTargetIds = targets.map((target) => target.document.id);
+  const attacks = [];
   for (const [index, target] of targets.entries()) {
-    await createAttackCard(attacker, target, weapon, {
+    const data = await createAttackCard(attacker, target, weapon, {
       groupAttackId,
       groupTargetIds,
       groupIndex: index,
       groupTotalTargets: targets.length,
+    }, {
+      dispatchPrompt: !isSuppressive,
+      skipDefenderPrompt: isSuppressive,
     });
+    if (data) attacks.push(data);
+  }
+
+  if (isSuppressive) {
+    await startSuppressiveFireResolution(attacks);
   }
 }
 
-async function createAttackCard(attacker, target, weapon, group) {
+async function createAttackCard(attacker, target, weapon, group, { dispatchPrompt = true, skipDefenderPrompt = false } = {}) {
   const view = await buildWeaponView(weapon, attacker, target);
   if (!view.dv) {
     ui.notifications.warn(view.reason || "Could not calculate DV for this weapon.");
@@ -317,6 +333,7 @@ async function createAttackCard(attacker, target, weapon, group) {
     tableName: view.tableName,
     bandLabel: view.bandLabel,
     reason: view.reason,
+    skipDefenderPrompt,
   };
 
   const content = await renderTemplate(TEMPLATES.declaration, data);
@@ -332,7 +349,28 @@ async function createAttackCard(attacker, target, weapon, group) {
   });
   rememberAttackDeclaration(message.getFlag(MODULE_ID, "attackDeclaration") ?? data);
 
-  await dispatchDefenderPrompt(data);
+  if (dispatchPrompt) await dispatchDefenderPrompt(data);
+  return data;
+}
+
+async function startSuppressiveFireResolution(attacks) {
+  if (attacks.length === 0) return;
+
+  const groupId = attacks[0].groupAttackId ?? attacks[0].attackId;
+  const entry = {
+    expected: attacks.length,
+    choices: new Map(),
+    evasions: new Map(),
+    skipDamage: true,
+  };
+
+  for (const attack of attacks) {
+    entry.choices.set(attack.attackId, { ...attack, defenderAction: "concentration" });
+  }
+  pendingAttackGroups.set(groupId, entry);
+  resolvingAttackGroups.add(groupId);
+
+  await collectGroupEvasionsOrResolve(groupId, entry);
 }
 
 function pickDefenderUser(actor, { includeGm = true, tokenDocument = null, data = null } = {}) {
@@ -383,7 +421,12 @@ function claimPrompt(attackId) {
   emitSocket({ type: "promptClaimed", attackId, ownerUserId: game.user.id });
 }
 
+function shouldSkipDefenderPrompt(data) {
+  return Boolean(data?.skipDefenderPrompt);
+}
+
 async function dispatchDefenderPrompt(data) {
+  if (shouldSkipDefenderPrompt(data)) return;
   const gm = game.users.find((user) => user.isGM && user.active);
   if (game.user.isGM || !gm) {
     await routeDefenderPrompt(data);
@@ -396,6 +439,7 @@ async function dispatchDefenderPrompt(data) {
 }
 
 async function routeDefenderPrompt(data) {
+  if (shouldSkipDefenderPrompt(data)) return;
   if (routedPrompts.has(data.attackId)) return;
   routedPrompts.add(data.attackId);
 
@@ -414,6 +458,7 @@ async function routeDefenderPrompt(data) {
 }
 
 async function maybeShowDefenderPrompt(data) {
+  if (shouldSkipDefenderPrompt(data)) return;
   if (shownPrompts.has(data.attackId)) return;
 
   const defender = await resolveToken(data.targetSceneId, data.targetTokenId, data.targetActorId);
@@ -447,7 +492,7 @@ async function requestNoEvade(data) {
 }
 
 async function requestEvade(data) {
-  await resolveEvadeChoice(data);
+  await resolveEvadeChoice({ ...data, defenderAction: "evade" });
 }
 
 async function submitDefenderChoice(data, action) {
@@ -479,7 +524,6 @@ async function recordDefenderChoice(data) {
   entry.choices.set(data.attackId, data);
   pendingAttackGroups.set(groupId, entry);
 
-  await simpleMessage(`${data.targetName} selected ${formatDefenderAction(data.defenderAction)} (${entry.choices.size}/${entry.expected}).`);
   if (entry.choices.size < entry.expected || resolvingAttackGroups.has(groupId)) return;
 
   resolvingAttackGroups.add(groupId);
@@ -488,15 +532,14 @@ async function recordDefenderChoice(data) {
 
 async function collectGroupEvasionsOrResolve(groupId, entry) {
   const choices = Array.from(entry.choices.values()).sort((a, b) => (a.groupIndex ?? 0) - (b.groupIndex ?? 0));
-  const evaders = choices.filter((choice) => choice.defenderAction === "evade");
-  if (evaders.length === 0) {
+  const contestedDefenders = choices.filter((choice) => CONTESTED_DEFENDER_ACTIONS.has(choice.defenderAction));
+  if (contestedDefenders.length === 0) {
     await resolveAttackGroup(groupId, entry);
     return;
   }
 
-  await simpleMessage("All defenders selected an action. Rolling evasions.");
   const resolverUserId = game.user.id;
-  for (const choice of evaders) {
+  for (const choice of contestedDefenders) {
     const recipient = await pickEvasionRoller(choice);
     const payload = { ...choice, resolverUserId };
     if (recipient === game.user.id) {
@@ -508,7 +551,7 @@ async function collectGroupEvasionsOrResolve(groupId, entry) {
 }
 
 async function rollGroupEvasion(data) {
-  const evasionTotal = await rollEvasionForData(data);
+  const evasionTotal = await rollDefenseForData(data);
 
   const payload = {
     ...data,
@@ -529,11 +572,8 @@ async function recordGroupEvasion(data) {
 
   entry.evasions ??= new Map();
   entry.evasions.set(data.attackId, data.evasionTotal);
-  const evaders = Array.from(entry.choices.values()).filter((choice) => choice.defenderAction === "evade");
-  const resultLabel = Number.isFinite(Number(data.evasionTotal)) ? data.evasionTotal : "failed";
-  await simpleMessage(`${data.targetName} Evasion ${resultLabel} (${entry.evasions.size}/${evaders.length}).`);
-
-  if (entry.evasions.size >= evaders.length) {
+  const contestedDefenders = Array.from(entry.choices.values()).filter((choice) => CONTESTED_DEFENDER_ACTIONS.has(choice.defenderAction));
+  if (entry.evasions.size >= contestedDefenders.length) {
     if (entry.resolvingFinal) return;
     entry.resolvingFinal = true;
     await resolveAttackGroup(groupId, entry);
@@ -542,16 +582,16 @@ async function recordGroupEvasion(data) {
 
 async function resolveAttackGroup(groupId, entry) {
   const choices = Array.from(entry.choices.values()).sort((a, b) => (a.groupIndex ?? 0) - (b.groupIndex ?? 0));
-  await simpleMessage("Resolving attack group with one attack roll.");
-
   try {
     const context = await getRollContext(choices[0]);
     if (!context) return;
 
+    markNativeResultSuppressions(choices, context.actor?.name);
     const attackRoll = await rollNative(context.actor, context.weapon, "attack");
     if (!attackRoll) return;
 
     const hits = [];
+    const outcomes = [];
     for (const choice of choices) {
       const comparison = getGroupComparison(choice, entry);
       if (!comparison) continue;
@@ -559,24 +599,28 @@ async function resolveAttackGroup(groupId, entry) {
       const hit = comparison.mode === "dv"
         ? attackRoll.resultTotal >= comparison.target
         : attackRoll.resultTotal > comparison.target;
+      outcomes.push({ choice, comparison, hit });
       if (hit) {
         hits.push({
           ...choice,
           autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, comparison.target),
         });
-      } else if (comparison.mode === "dv") {
-        await simpleMessage(`${context.actor.name} misses ${choice.targetName} with ${context.weapon.name} (${attackRoll.resultTotal} vs DV ${comparison.target}).`);
-      } else {
-        await simpleMessage(`${choice.targetName} evades ${context.weapon.name} (${attackRoll.resultTotal} vs Evasion ${comparison.target}).`);
       }
     }
 
-    if (hits.length === 0) {
-      await simpleMessage(`${context.weapon.name} hits no targets.`);
-      return;
+    for (const outcome of outcomes) {
+      await simpleMessage(formatAttackOutcomeMessage(
+        context.actor,
+        outcome.choice.targetName,
+        attackRoll.resultTotal,
+        outcome.comparison,
+        outcome.hit,
+        entry,
+      ), { outcome: outcome.hit });
     }
 
-    await simpleMessage(`${context.weapon.name} hits: ${hits.map((hit) => hit.targetName).join(", ")}. Rolling damage once.`);
+    if (hits.length === 0 || entry.skipDamage) return;
+
     await rollNative(context.actor, context.weapon, "damage", {
       tokens: await getDamageTokensForHits(hits),
       autofireMultiplier: getHighestAutofireMultiplier(hits),
@@ -588,14 +632,27 @@ async function resolveAttackGroup(groupId, entry) {
   }
 }
 
+function formatAttackOutcomeMessage(attacker, targetName, attackTotal, comparison, hit, entry = {}) {
+  const attackerName = attacker?.name ?? "Attacker";
+  const threshold = Number(comparison?.target);
+  const label = comparison?.label ?? (comparison?.mode === "dv" ? "DV" : "Defense");
+  const margin = Math.abs(Number(attackTotal) - threshold);
+  if (hit) {
+    const verb = entry.skipDamage ? "affects" : "hits";
+    const damagePrompt = entry.skipDamage ? "" : " Roll Damage!";
+    return `${attackerName} ${verb} ${targetName} (${label}: ${threshold}, ${margin} over)!${damagePrompt}`;
+  }
+  return `${attackerName} missed ${targetName} by ${margin} (${label}: ${threshold}).`;
+}
+
 function getGroupComparison(choice, entry) {
-  if (choice.defenderAction === "evade") {
+  if (CONTESTED_DEFENDER_ACTIONS.has(choice.defenderAction)) {
     const evasionTotal = Number(entry.evasions?.get(choice.attackId));
     if (!Number.isFinite(evasionTotal)) {
-      ui.notifications.warn(`No valid Evasion total for ${choice.targetName}.`);
+      ui.notifications.warn(`No valid ${getDefenseLabel(choice)} total for ${choice.targetName}.`);
       return null;
     }
-    return { mode: "evasion", target: evasionTotal };
+    return { mode: "evasion", target: evasionTotal, label: getDefenseLabel(choice) };
   }
 
   const dv = Number(choice.dv);
@@ -606,17 +663,12 @@ function getGroupComparison(choice, entry) {
   return { mode: "dv", target: dv };
 }
 
-function formatDefenderAction(action) {
-  if (action === "no-evade") return "No evade";
-  if (action === "evade") return "Si evade";
-  return action ?? "-";
-}
-
 async function resolveEvadeChoice(data) {
+  const payload = { ...data, defenderAction: "evade" };
   const defender = await resolveToken(data.targetSceneId, data.targetTokenId, data.targetActorId);
   const [defenderActor] = getDefenderOwnershipDocs(data, defender);
   if (!game.user.isGM && userOwnsAny(game.user, getDefenderOwnershipDocs(data, defender), data, defender?.document)) {
-    await rollEvasionAndContinue(data);
+    await rollEvasionAndContinue(payload);
     return;
   }
 
@@ -625,10 +677,10 @@ async function resolveEvadeChoice(data) {
     : null;
   const recipient = evasionUser?.id ?? pickAttackResolver(data);
   if (recipient === game.user.id) {
-    await rollEvasionAndContinue(data);
+    await rollEvasionAndContinue(payload);
     return;
   }
-  emitTo(recipient, "rollEvasion", data);
+  emitTo(recipient, "rollEvasion", payload);
 }
 
 async function pickEvasionRoller(data) {
@@ -651,6 +703,7 @@ function pickAttackResolver(data) {
 async function resolveNoEvade(data) {
   const context = await getRollContext(data);
   if (!context) return;
+  markNativeResultSuppressions([data], context.actor?.name);
   const attackRoll = await rollNative(context.actor, context.weapon, "attack");
   if (!attackRoll) return;
 
@@ -660,23 +713,25 @@ async function resolveNoEvade(data) {
     return;
   }
 
-  if (attackRoll.resultTotal >= dv) {
+  const comparison = { mode: "dv", target: dv, label: "DV" };
+  const hit = attackRoll.resultTotal >= dv;
+  await simpleMessage(formatAttackOutcomeMessage(context.actor, data.targetName, attackRoll.resultTotal, comparison, hit), { outcome: hit });
+  if (hit) {
     await rollNative(context.actor, context.weapon, "damage", {
       tokens: await getDamageTokensForHits([data]),
       autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, dv),
       aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
     });
-  } else {
-    await simpleMessage(`${context.actor.name} misses ${data.targetName} with ${context.weapon.name} (${attackRoll.resultTotal} vs DV ${dv}).`);
   }
 }
 
 async function rollEvasionAndContinue(data) {
-  const evasionTotal = await rollEvasionForData(data);
+  const defendedData = { ...data, defenderAction: data.defenderAction ?? "evade" };
+  const evasionTotal = await rollDefenseForData(defendedData);
   if (!Number.isFinite(evasionTotal)) return;
 
-  const resolver = pickAttackResolver(data);
-  const payload = { ...data, evasionTotal };
+  const resolver = pickAttackResolver(defendedData);
+  const payload = { ...defendedData, evasionTotal };
   if (resolver === game.user.id) {
     await resolveAgainstEvasion(payload);
     return;
@@ -684,39 +739,43 @@ async function rollEvasionAndContinue(data) {
   emitTo(resolver, "resolveAgainstEvasion", payload);
 }
 
-async function rollEvasionForData(data) {
+async function rollDefenseForData(data) {
   const defender = await resolveToken(data.targetSceneId, data.targetTokenId, data.targetActorId);
   const actor = defender?.actor ?? getActorById(data.targetBaseActorId) ?? getActorById(data.targetActorId);
+  const defenseLabel = getDefenseLabel(data);
   if (!actor) {
-    ui.notifications.warn("Could not find the defender actor for Evasion.");
+    ui.notifications.warn(`Could not find the defender actor for ${defenseLabel}.`);
     return null;
   }
 
-  const evasion = findEvasionSkill(actor);
-  if (!evasion) {
-    ui.notifications.warn(`${actor.name} has no Evasion skill item.`);
+  const defenseSkill = findDefenseSkill(actor, data);
+  if (!defenseSkill) {
+    ui.notifications.warn(`${actor.name} has no ${defenseLabel} skill item.`);
     return null;
   }
 
-  const evasionRoll = await rollNative(actor, evasion, "skill");
-  return evasionRoll?.resultTotal ?? null;
+  const defenseRoll = await rollNative(actor, defenseSkill, "skill");
+  return defenseRoll?.resultTotal ?? null;
 }
 
 async function resolveAgainstEvasion(data) {
-  const context = await getRollContext(data);
+  const defendedData = { ...data, defenderAction: data.defenderAction ?? "evade" };
+  const context = await getRollContext(defendedData);
   if (!context) return;
+  markNativeResultSuppressions([defendedData], context.actor?.name);
   const attackRoll = await rollNative(context.actor, context.weapon, "attack");
   if (!attackRoll) return;
 
   const evasionTotal = Number(data.evasionTotal);
-  if (attackRoll.resultTotal > evasionTotal) {
+  const comparison = { mode: "evasion", target: evasionTotal, label: getDefenseLabel(defendedData) };
+  const hit = attackRoll.resultTotal > evasionTotal;
+  await simpleMessage(formatAttackOutcomeMessage(context.actor, defendedData.targetName, attackRoll.resultTotal, comparison, hit), { outcome: hit });
+  if (hit) {
     await rollNative(context.actor, context.weapon, "damage", {
-      tokens: await getDamageTokensForHits([data]),
+      tokens: await getDamageTokensForHits([defendedData]),
       autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, evasionTotal),
       aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
     });
-  } else {
-    await simpleMessage(`${data.targetName} evades ${context.weapon.name} (${attackRoll.resultTotal} vs Evasion ${evasionTotal}).`);
   }
 }
 
@@ -758,6 +817,10 @@ function getNativeRollType(actor, item, rollType) {
   if (rollType !== "attack") return rollType;
   const savedFireType = getSavedFireType(actor, item);
   return FIRE_MODE_ROLL_TYPES.has(savedFireType) ? savedFireType : rollType;
+}
+
+function isSuppressiveFire(actor, item) {
+  return getNativeRollType(actor, item, "attack") === "suppressive";
 }
 
 function getSavedFireType(actor, item) {
@@ -940,13 +1003,28 @@ function isOwner(document, user) {
   return Math.max(userLevel, defaultLevel) >= ownerLevel;
 }
 
-function findEvasionSkill(actor) {
-  const normalize = (value) => String(value ?? "").toLocaleLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return actor.items.find((item) => {
+function findDefenseSkill(actor, data) {
+  const expectedNames = getDefenseSkillNames(data).map((name) => normalizeSkillName(name));
+  return getCollectionValues(actor.items).find((item) => {
     if (item.type !== "skill") return false;
-    const name = normalize(item.name);
-    return name === "evasion";
+    return expectedNames.includes(normalizeSkillName(item.name));
   });
+}
+
+function getDefenseSkillNames(data) {
+  if (data?.defenderAction === "concentration") return ["concentration", "concentracion"];
+  return ["evasion"];
+}
+
+function getDefenseLabel(data) {
+  return data?.defenderAction === "concentration" ? "Concentration" : "Evasion";
+}
+
+function normalizeSkillName(value) {
+  return String(value ?? "")
+    .toLocaleLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 async function calculateDv(weapon, attacker, target) {
@@ -1203,20 +1281,137 @@ function formatDistance(distance) {
   return `${Math.round(distance * 10) / 10} ${units}`;
 }
 
-async function simpleMessage(content) {
+async function simpleMessage(content, { outcome = null } = {}) {
   const safeContent = escapeHtml(content);
+  const outcomeStyle = getOutcomeMessageStyle(outcome);
   await ChatMessage.create({
     user: game.user.id,
+    flags: {
+      [MODULE_ID]: {
+        resultMessage: true,
+      },
+    },
     content: `
       <div class="rollcard cpr-af-message">
         <div class="rollcard-bottom">
-          <div class="cpr-block text-normal">
+          <div class="cpr-block text-normal"${outcomeStyle}>
             <div class="cpr-af-message-content">${safeContent}</div>
           </div>
         </div>
       </div>
     `,
   });
+}
+
+function getOutcomeMessageStyle(outcome) {
+  if (outcome === true || outcome === "hit" || outcome === "success") {
+    return ' style="padding:10px;background-color:var(--cpr-text-chat-success, #2d9f36)"';
+  }
+  if (outcome === false || outcome === "miss" || outcome === "failure") {
+    return ' style="padding:10px;background-color:var(--cpr-text-chat-failure, #b90202ff)"';
+  }
+  return "";
+}
+
+async function maybeSuppressNativeResultMessage(message) {
+  if (message.getFlag?.(MODULE_ID, "resultMessage")) return false;
+  if (!isDiwakoCpredAdditionsActive()) return false;
+
+  pruneNativeResultSuppressions();
+  if (pendingNativeResultSuppressions.size === 0) return false;
+
+  const content = String(message.content ?? "");
+  if (!isSuppressibleDiwakoResultContent(content)) return false;
+  const text = normalizeMessageText(content);
+
+  for (const key of pendingNativeResultSuppressions.keys()) {
+    if (!messageMatchesNativeResultSuppression(text, key)) continue;
+    if (!canManageChatMessage(message)) return false;
+    try {
+      await message.delete();
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function markNativeResultSuppressions(attacks, actorName = null) {
+  const expiresAt = Date.now() + 5000;
+  for (const attack of attacks) {
+    const attackerNames = [actorName, attack.attackerName].filter(Boolean);
+    for (const attackerName of attackerNames) {
+      const key = getNativeResultSuppressionKey(attackerName, attack.targetName);
+      pendingNativeResultSuppressions.set(key, expiresAt);
+    }
+  }
+}
+
+function pruneNativeResultSuppressions() {
+  const now = Date.now();
+  for (const [key, expiresAt] of pendingNativeResultSuppressions.entries()) {
+    if (expiresAt <= now) pendingNativeResultSuppressions.delete(key);
+  }
+}
+
+function getNativeResultSuppressionKey(attackerName, targetName) {
+  return `${normalizeResultText(attackerName)}|${normalizeResultText(targetName)}`;
+}
+
+function messageMatchesNativeResultSuppression(text, key) {
+  const [attackerName, targetName] = key.split("|");
+  const normalized = normalizeResultText(text);
+  return normalized.includes(`${attackerName} hits ${targetName} (dv:`)
+    || normalized.includes(`${attackerName} missed ${targetName} by `)
+    || (normalized.includes(`${attackerName} beats the ranged dv`)
+      && normalized.includes(`to hit ${targetName}`));
+}
+
+function isSuppressibleNativeResultText(text) {
+  const normalized = normalizeResultText(text);
+  return (normalized.includes(" hits ") && normalized.includes("(dv:") && normalized.includes("roll damage"))
+    || (normalized.includes(" missed ") && normalized.includes(" by ") && normalized.includes("(dv:"))
+    || (normalized.includes(" beats the ranged dv ") && normalized.includes(" to hit ") && normalized.includes("roll damage"))
+    || (normalized.includes(" according to the ranged dv ") && normalized.includes(" missed ") && normalized.includes("roll damage"));
+}
+
+function isSuppressibleDiwakoResultContent(content) {
+  return hasDiwakoResultTraits(content) && isSuppressibleNativeResultText(content);
+}
+
+function hasDiwakoResultTraits(content) {
+  const normalized = normalizeRawContent(content);
+  return normalized.includes("cpr-block")
+    && normalized.includes("background-color:")
+    && (normalized.includes("fg-red") || normalized.includes("fg-green"));
+}
+
+function isDiwakoCpredAdditionsActive() {
+  return Boolean(game.modules?.get?.(DIWAKO_CPRED_ADDITIONS_ID)?.active);
+}
+
+function normalizeMessageText(content) {
+  return String(content ?? "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeResultText(content) {
+  return normalizeMessageText(content).toLocaleLowerCase();
+}
+
+function normalizeRawContent(content) {
+  return String(content ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function canManageChatMessage(message) {
+  const messageUserId = message.user?.id ?? message.user;
+  return game.user.isGM || messageUserId === game.user.id;
 }
 
 function escapeHtml(value) {
@@ -1324,7 +1519,7 @@ async function getTrustedSocketData(data) {
     resolverUserId: data.resolverUserId,
   };
 
-  if (trusted.defenderAction && !["evade", "no-evade"].includes(trusted.defenderAction)) return null;
+  if (trusted.defenderAction && !["evade", "no-evade", "concentration"].includes(trusted.defenderAction)) return null;
   return trusted;
 }
 
@@ -1362,9 +1557,22 @@ export const __test__ = {
   getActorById,
   getActiveDvTableName,
   getBaseDvTableName,
+  getDefenseLabel,
+  getDefenseSkillNames,
+  getGroupComparison,
   findWeaponBySelection,
+  findDefenseSkill,
+  formatAttackOutcomeMessage,
+  getOutcomeMessageStyle,
+  getNativeResultSuppressionKey,
   getCollectionValues,
   getHighestAutofireMultiplier,
+  hasDiwakoResultTraits,
+  isDiwakoCpredAdditionsActive,
+  isSuppressibleDiwakoResultContent,
+  isSuppressibleNativeResultText,
+  messageMatchesNativeResultSuppression,
+  isSuppressiveFire,
   getLoadedAmmoVariety,
   getNativeRollType,
   getSavedFireType,
@@ -1376,6 +1584,7 @@ export const __test__ = {
   inferDvTableName,
   formatCamelCase,
   normalizeAimedLocation,
+  shouldSkipDefenderPrompt,
   getTrustedSocketData,
   rememberAttackDeclaration,
   validateSocketMessage,

@@ -44,6 +44,7 @@ globalThis.game = {
   user: users[0],
   users,
   actors,
+  modules: new Map([["diwako-cpred-additions", { active: true }]]),
   messages: [],
   scenes: {
     get: () => ({
@@ -120,6 +121,15 @@ test("getSavedFireType falls back to item _id and ignores unsupported modes", ()
 
   assert.equal(__test__.getSavedFireType(actor, { _id: "legacy-id" }), "autofire");
   assert.equal(__test__.getNativeRollType(unsupported, { id: "weapon-1" }, "attack"), "attack");
+});
+
+test("isSuppressiveFire detects the attacker's selected suppressive fire mode", () => {
+  const actor = {
+    getFlag: (_systemId, key) => (key === "firetype-weapon-1" ? "suppressive" : null),
+  };
+
+  assert.equal(__test__.isSuppressiveFire(actor, { id: "weapon-1" }), true);
+  assert.equal(__test__.isSuppressiveFire(actor, { id: "weapon-2" }), false);
 });
 
 test("getAutofireHitMultiplier returns attack margin capped by weapon autofire max", () => {
@@ -337,6 +347,103 @@ test("applyAimedLocation only updates aimed damage rolls with valid locations", 
   assert.equal(__test__.normalizeAimedLocation("body"), null);
 });
 
+test("defense skill helpers use Concentration for suppressive fire", () => {
+  const actor = {
+    items: [
+      { type: "skill", name: "Evasion" },
+      { type: "skill", name: "Concentración" },
+    ],
+  };
+
+  assert.deepEqual(__test__.getDefenseSkillNames({ defenderAction: "concentration" }), ["concentration", "concentracion"]);
+  assert.equal(__test__.getDefenseLabel({ defenderAction: "concentration" }), "Concentration");
+  assert.equal(__test__.findDefenseSkill(actor, { defenderAction: "concentration" }).name, "Concentración");
+  assert.equal(__test__.findDefenseSkill(actor, { defenderAction: "evade" }).name, "Evasion");
+});
+
+test("suppressive fire declarations skip the defender evasion prompt", () => {
+  assert.equal(__test__.shouldSkipDefenderPrompt({ skipDefenderPrompt: true }), true);
+  assert.equal(__test__.shouldSkipDefenderPrompt({ skipDefenderPrompt: false }), false);
+  assert.equal(__test__.shouldSkipDefenderPrompt({}), false);
+});
+
+test("group comparisons use evasion totals for evading targets even when a DV exists", () => {
+  const entry = {
+    evasions: new Map([["attack-1", 18]]),
+  };
+  const choice = {
+    attackId: "attack-1",
+    defenderAction: "evade",
+    targetName: "Target",
+    dv: 13,
+  };
+
+  assert.deepEqual(__test__.getGroupComparison(choice, entry), {
+    mode: "evasion",
+    target: 18,
+    label: "Evasion",
+  });
+});
+
+test("attack outcome messages use the actual comparison target", () => {
+  const attacker = { name: "Solo" };
+
+  assert.equal(
+    __test__.formatAttackOutcomeMessage(attacker, "Target", 21, { mode: "evasion", target: 18, label: "Evasion" }, true),
+    "Solo hits Target (Evasion: 18, 3 over)! Roll Damage!",
+  );
+  assert.equal(
+    __test__.formatAttackOutcomeMessage(attacker, "Target", 17, { mode: "evasion", target: 18, label: "Evasion" }, false),
+    "Solo missed Target by 1 (Evasion: 18).",
+  );
+  assert.equal(
+    __test__.formatAttackOutcomeMessage(attacker, "Target", 13, { mode: "dv", target: 13, label: "DV" }, true),
+    "Solo hits Target (DV: 13, 0 over)! Roll Damage!",
+  );
+  assert.equal(
+    __test__.formatAttackOutcomeMessage(attacker, "Target", 18, { mode: "evasion", target: 15, label: "Concentration" }, true, { skipDamage: true }),
+    "Solo affects Target (Concentration: 15, 3 over)!",
+  );
+});
+
+test("getOutcomeMessageStyle returns controlled hit and miss chat colors", () => {
+  assert.equal(
+    __test__.getOutcomeMessageStyle(true),
+    ' style="padding:10px;background-color:var(--cpr-text-chat-success, #2d9f36)"',
+  );
+  assert.equal(
+    __test__.getOutcomeMessageStyle(false),
+    ' style="padding:10px;background-color:var(--cpr-text-chat-failure, #b90202ff)"',
+  );
+  assert.equal(__test__.getOutcomeMessageStyle(null), "");
+});
+
+test("native DV result suppression only matches Diwako attacker and target results", () => {
+  const key = __test__.getNativeResultSuppressionKey("Solo", "Target");
+  const hitHtml = '<div class="cpr-block" style="padding:10px;background-color:var(--cpr-text-chat-success, #2d9f36)"><b>Solo <span class="fg-green">hits</span> Target</b> (DV: 13, 5 over)! Roll Damage!</div>';
+  const missHtml = '<div class="cpr-block" style="padding:10px;background-color:var(--cpr-text-chat-failure, #b90202ff)"><b>Solo <span class="fg-red">missed</span> Target</b> by 2 (DV: 15)!</div>';
+  const evadeHitHtml = '<div class="cpr-block" style="padding:10px;background-color:var(--cpr-text-chat-success, #2d9f36)"><b>Solo <span class="fg-green">beats the ranged DV</span> </b>(13, 5 over)<b> to hit Target</b> by 4! Roll damage IF they have NOT declared that they are dodging OR your roll has beat their evasion roll</div>';
+
+  assert.equal(__test__.isDiwakoCpredAdditionsActive(), true);
+  game.modules.set("diwako-cpred-additions", { active: false });
+  assert.equal(__test__.isDiwakoCpredAdditionsActive(), false);
+  game.modules.set("diwako-cpred-additions", { active: true });
+  assert.equal(__test__.hasDiwakoResultTraits(hitHtml), true);
+  assert.equal(__test__.hasDiwakoResultTraits("Solo hits Target (DV: 13, 5 over)! Roll Damage!"), false);
+  assert.equal(__test__.isSuppressibleDiwakoResultContent(hitHtml), true);
+  assert.equal(__test__.isSuppressibleDiwakoResultContent(missHtml), true);
+  assert.equal(__test__.isSuppressibleDiwakoResultContent(evadeHitHtml), true);
+  assert.equal(__test__.isSuppressibleDiwakoResultContent("Solo hits Target (DV: 13, 5 over)! Roll Damage!"), false);
+  assert.equal(__test__.isSuppressibleNativeResultText("Solo hits Target (DV: 13, 5 over)! Roll Damage!"), true);
+  assert.equal(__test__.isSuppressibleNativeResultText("Solo missed Target by 2 (DV: 15)"), true);
+  assert.equal(__test__.isSuppressibleNativeResultText("Solo beats the ranged DV (13, 5 over) to hit Target by 4! Roll damage IF they have NOT declared that they are dodging OR your roll has beat their evasion roll"), true);
+  assert.equal(__test__.isSuppressibleNativeResultText("Solo hits Target (Evasion: 18, 2 over)! Roll Damage!"), false);
+  assert.equal(__test__.messageMatchesNativeResultSuppression("Solo hits Target (DV: 13, 5 over)! Roll Damage!", key), true);
+  assert.equal(__test__.messageMatchesNativeResultSuppression("Solo missed Target by 2 (DV: 15)", key), true);
+  assert.equal(__test__.messageMatchesNativeResultSuppression("Solo beats the ranged DV (13, 5 over) to hit Target by 4! Roll damage IF they have NOT declared that they are dodging OR your roll has beat their evasion roll", key), true);
+  assert.equal(__test__.messageMatchesNativeResultSuppression("Solo hits Other Target (DV: 13, 5 over)! Roll Damage!", key), false);
+});
+
 test("socket validation rejects unknown message types", async () => {
   const result = await __test__.validateSocketMessage({ type: "deleteEverything", data: declaration });
   assert.equal(result, null);
@@ -355,6 +462,23 @@ test("socket validation canonicalizes attack data from stored declaration", asyn
 
   assert.equal(result.data.weaponId, "weapon-1");
   assert.equal(result.data.defenderAction, "evade");
+});
+
+test("socket validation accepts concentration as an internal defender roll action", async () => {
+  __test__.knownAttackDeclarations.clear();
+  __test__.rememberAttackDeclaration({ ...declaration, skipDefenderPrompt: true });
+
+  const result = await __test__.validateSocketMessage({
+    type: "recordChoice",
+    userId: "resolver",
+    data: {
+      ...declaration,
+      defenderAction: "concentration",
+    },
+  });
+
+  assert.equal(result.data.defenderAction, "concentration");
+  assert.equal(result.data.skipDefenderPrompt, true);
 });
 
 test("socket validation rejects resolver-only actions for non-resolvers", async () => {

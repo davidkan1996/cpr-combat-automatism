@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.8
+
+- Fixed Suppressive Fire resolution:
+  - Targets no longer receive an Evade / No evade popup.
+  - Targets always roll Concentration.
+  - The attack roll is compared against each target's Concentration roll.
+  - Damage is not rolled for Suppressive Fire.
+- Removed extra debug-style chat messages from grouped attack resolution.
+- Fixed hit/miss comparison messages so Evading targets are resolved against Evasion instead of weapon DV.
+- Replaced redundant grouped hit summary messages with one definitive result message per target.
+- Changed "hits no targets" style results to use the attacker name instead of the weapon name.
+
 ## v0.1.7
 
 - Fixed weapon selection in the attack dialog so the declared attack uses the selected weapon instead of falling back to another weapon's DV table.
