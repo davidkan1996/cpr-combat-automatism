@@ -102,6 +102,54 @@ test("getActorById tolerates missing synthetic token actor map", () => {
   assert.equal(__test__.getActorById("missing"), undefined);
 });
 
+test("public API exposes attack preparation and resolution methods", () => {
+  const api = __test__.createPublicApi();
+
+  assert.equal(typeof api.open, "function");
+  assert.equal(typeof api.prepareAttack, "function");
+  assert.equal(typeof api.declareAttack, "function");
+  assert.equal(typeof api.resolveAttack, "function");
+  assert.equal(typeof api.chooseDefense, "function");
+  assert.equal(typeof api.getWeapons, "function");
+  assert.equal(Object.isFrozen(api), true);
+});
+
+test("public API normalizes defender actions", () => {
+  assert.equal(__test__.normalizeDefenderAction(true), "evade");
+  assert.equal(__test__.normalizeDefenderAction("evade"), "evade");
+  assert.equal(__test__.normalizeDefenderAction(false), "no-evade");
+  assert.equal(__test__.normalizeDefenderAction("noEvade"), "no-evade");
+  assert.equal(__test__.normalizeDefenderAction("no-evade"), "no-evade");
+  assert.equal(__test__.normalizeDefenderAction("suppressive"), "concentration");
+  assert.equal(__test__.normalizeDefenderAction("concentration"), "concentration");
+  assert.equal(__test__.normalizeDefenderAction("parry"), null);
+});
+
+test("public API normalizes explicit attacker target and weapon input", () => {
+  const attackerToken = {
+    name: "Solo",
+    actor: attackerActor,
+    document: { id: "attacker-token" },
+  };
+  const targetToken = {
+    name: "Target",
+    actor: defenderActor,
+    document: { id: "target-token" },
+  };
+  const weapon = { id: "weapon-1", name: "Rifle" };
+
+  const request = __test__.normalizePublicAttackRequest({
+    attacker: attackerToken,
+    targets: targetToken,
+    weapon,
+  });
+
+  assert.equal(request.attacker, attackerToken);
+  assert.deepEqual(request.targets, [targetToken]);
+  assert.equal(request.weapon, weapon);
+  assert.deepEqual(__test__.normalizeTargetList(new Set([targetToken])), [targetToken]);
+});
+
 test("getNativeRollType uses the attacker's selected fire mode for attacks", () => {
   const actor = {
     getFlag: (_systemId, key) => (key === "firetype-weapon-1" ? "aimed" : null),

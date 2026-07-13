@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.9
+
+- Added a public `game.cprCombatAutomatism` API for external macros/modules to prepare, declare and resolve attacks.
+- Added public helpers for defender choices and explicit Evasion/Concentration totals.
+- Split attack declaration preparation from chat card creation so integrations can inspect declarations before dispatching prompts.
+- Documented the public API in the README.
+- Added regression tests for the public API surface and input normalization.
+
 ## v0.1.8
 
 - Fixed Suppressive Fire resolution:

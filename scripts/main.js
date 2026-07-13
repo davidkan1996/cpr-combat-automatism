@@ -85,12 +85,96 @@ Hooks.once("ready", async () => {
     ui.notifications.error("CPR Combat Automatism could not load the Cyberpunk RED native roll adapter. See console.");
   }
 
-  game.cprCombatAutomatism = {
-    open: openAttackDialog,
-  };
+  game.cprCombatAutomatism = createPublicApi();
   game.cprAttackFlow = game.cprCombatAutomatism;
   game.socket.on(SOCKET, onSocket);
 });
+
+function createPublicApi() {
+  return Object.freeze({
+    open: openAttackDialog,
+    prepareAttack: prepareAttackApi,
+    declareAttack: declareAttackApi,
+    resolveAttack: resolveAttackApi,
+    chooseDefense: chooseDefenseApi,
+    getWeapons,
+  });
+}
+
+async function prepareAttackApi(input = {}) {
+  const request = normalizePublicAttackRequest(input ?? {});
+  if (!request) return [];
+  return prepareAttackDeclarations(request.attacker, request.targets, request.weapon);
+}
+
+async function declareAttackApi(input = {}) {
+  const request = normalizePublicAttackRequest(input ?? {});
+  if (!request) return [];
+  return createAttackCards(request.attacker, request.targets, request.weapon, {
+    dispatchPrompts: input?.dispatchPrompts !== false,
+  });
+}
+
+async function resolveAttackApi(data, options = {}) {
+  const { defenderAction = "no-evade", defenseTotal = null, evasionTotal = null } = options ?? {};
+  const action = normalizeDefenderAction(defenderAction);
+  if (!action) {
+    ui.notifications.warn("Unsupported CPR Combat Automatism defender action.");
+    return null;
+  }
+
+  const total = Number(defenseTotal ?? evasionTotal);
+  if (CONTESTED_DEFENDER_ACTIONS.has(action) && Number.isFinite(total)) {
+    return resolveAgainstEvasion({ ...data, defenderAction: action, evasionTotal: total });
+  }
+  if (action === "concentration") return rollEvasionAndContinue({ ...data, defenderAction: action });
+  return submitDefenderChoice(data, action);
+}
+
+async function chooseDefenseApi(data, defenderAction) {
+  const action = normalizeDefenderAction(defenderAction);
+  if (!action) {
+    ui.notifications.warn("Unsupported CPR Combat Automatism defender action.");
+    return null;
+  }
+  return submitDefenderChoice(data, action);
+}
+
+function normalizePublicAttackRequest(input = {}) {
+  input ??= {};
+  const selection = (!input.attacker || !input.targets) ? getSelection() : null;
+  const attacker = input.attacker ?? selection?.attacker;
+  const targets = normalizeTargetList(input.targets ?? selection?.targets);
+  const weapon = input.weapon ?? (attacker?.actor ? getWeapons(attacker.actor)[0] : null);
+
+  if (!attacker?.actor || !attacker?.document) {
+    ui.notifications.warn("A public CPR Combat Automatism attack needs an attacker token.");
+    return null;
+  }
+  if (targets.length === 0 || targets.some((target) => !target?.actor || !target?.document)) {
+    ui.notifications.warn("A public CPR Combat Automatism attack needs one or more target tokens.");
+    return null;
+  }
+  if (!weapon) {
+    ui.notifications.warn("A public CPR Combat Automatism attack needs a weapon.");
+    return null;
+  }
+  return { attacker, targets, weapon };
+}
+
+function normalizeTargetList(targets) {
+  if (!targets) return [];
+  if (Array.isArray(targets)) return targets;
+  if (typeof targets[Symbol.iterator] === "function") return Array.from(targets);
+  return [targets];
+}
+
+function normalizeDefenderAction(action) {
+  if (action === true || action === "evade") return "evade";
+  if (action === false || action === "noEvade" || action === "no-evade") return "no-evade";
+  if (action === "concentration" || action === "suppressive") return "concentration";
+  return null;
+}
 
 Hooks.on("getSceneControlButtons", (controls) => {
   const tokenControls = Array.isArray(controls)
@@ -271,35 +355,48 @@ async function buildDialogWeaponView(weapon, attacker, targets) {
   };
 }
 
-async function createAttackCards(attacker, targets, weapon) {
+async function createAttackCards(attacker, targets, weapon, { dispatchPrompts = true } = {}) {
   if (!weapon) {
     ui.notifications.warn("Selected weapon was not found on the attacker.");
-    return;
+    return [];
   }
 
   const isSuppressive = isSuppressiveFire(attacker.actor, weapon);
+  const attacks = [];
+  const declarations = await prepareAttackDeclarations(attacker, targets, weapon, {
+    skipDefenderPrompt: isSuppressive,
+  });
+
+  for (const data of declarations) {
+    await createAttackDeclarationMessage(attacker, data);
+    if (data) attacks.push(data);
+    if (dispatchPrompts && !isSuppressive) await dispatchDefenderPrompt(data);
+  }
+
+  if (dispatchPrompts && isSuppressive) {
+    await startSuppressiveFireResolution(attacks);
+  }
+  return attacks;
+}
+
+async function prepareAttackDeclarations(attacker, targets, weapon, { skipDefenderPrompt = false } = {}) {
   const groupAttackId = foundry.utils.randomID();
   const groupTargetIds = targets.map((target) => target.document.id);
-  const attacks = [];
+  const declarations = [];
+
   for (const [index, target] of targets.entries()) {
-    const data = await createAttackCard(attacker, target, weapon, {
+    declarations.push(await buildAttackDeclaration(attacker, target, weapon, {
       groupAttackId,
       groupTargetIds,
       groupIndex: index,
       groupTotalTargets: targets.length,
-    }, {
-      dispatchPrompt: !isSuppressive,
-      skipDefenderPrompt: isSuppressive,
-    });
-    if (data) attacks.push(data);
+    }, { skipDefenderPrompt }));
   }
 
-  if (isSuppressive) {
-    await startSuppressiveFireResolution(attacks);
-  }
+  return declarations;
 }
 
-async function createAttackCard(attacker, target, weapon, group, { dispatchPrompt = true, skipDefenderPrompt = false } = {}) {
+async function buildAttackDeclaration(attacker, target, weapon, group, { skipDefenderPrompt = false } = {}) {
   const view = await buildWeaponView(weapon, attacker, target);
   if (!view.dv) {
     ui.notifications.warn(view.reason || "Could not calculate DV for this weapon.");
@@ -336,6 +433,10 @@ async function createAttackCard(attacker, target, weapon, group, { dispatchPromp
     skipDefenderPrompt,
   };
 
+  return data;
+}
+
+async function createAttackDeclarationMessage(attacker, data) {
   const content = await renderTemplate(TEMPLATES.declaration, data);
   const message = await ChatMessage.create({
     user: game.user.id,
@@ -348,9 +449,7 @@ async function createAttackCard(attacker, target, weapon, group, { dispatchPromp
     },
   });
   rememberAttackDeclaration(message.getFlag(MODULE_ID, "attackDeclaration") ?? data);
-
-  if (dispatchPrompt) await dispatchDefenderPrompt(data);
-  return data;
+  return message;
 }
 
 async function startSuppressiveFireResolution(attacks) {
@@ -1552,6 +1651,7 @@ export const __test__ = {
   applyAimedLocation,
   applyAutofireMultiplier,
   clampAutofireMultiplier,
+  createPublicApi,
   getAimedDamageLocation,
   getAutofireHitMultiplier,
   getActorById,
@@ -1584,6 +1684,10 @@ export const __test__ = {
   inferDvTableName,
   formatCamelCase,
   normalizeAimedLocation,
+  normalizeDefenderAction,
+  normalizePublicAttackRequest,
+  normalizeTargetList,
+  prepareAttackDeclarations,
   shouldSkipDefenderPrompt,
   getTrustedSocketData,
   rememberAttackDeclaration,
