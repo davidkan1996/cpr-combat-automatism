@@ -67,6 +67,145 @@
   padding: 8px 10px 8px 14px;
 }
 
+.cpr-af-native-rolls .rollcard {
+  margin-top: 0.5rem;
+}
+
+.cpr-af-native-rolls [data-action="rollDamage"] {
+  display: none;
+}
+
+.cpr-af-attack-summary {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  gap: 0.1rem 0.4rem;
+  margin-bottom: 0.35rem;
+  line-height: 1.15;
+}
+
+.cpr-af-results-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: center;
+}
+
+.cpr-af-results-table th,
+.cpr-af-results-table td {
+  border: 1px solid rgb(255 255 255 / 20%);
+  padding: 0.18rem 0.22rem;
+}
+
+.cpr-af-result-button {
+  width: auto;
+  min-width: 2rem;
+  margin: 0;
+  padding: 0.15rem 0.35rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+}
+
+.cpr-af-roll-detail-area {
+  margin-top: 0.3rem;
+}
+
+.cpr-af-roll-detail {
+  padding: 0.35rem;
+  border: 1px solid rgb(255 255 255 / 20%);
+  background: rgb(0 0 0 / 18%);
+  font-size: 0.8rem;
+}
+
+.cpr-af-roll-detail[hidden],
+.cpr-af-roll-detail-collapsed {
+  display: none;
+}
+
+.cpr-af-roll-total {
+  margin-top: 0.25rem;
+  border-top: 1px solid rgb(255 255 255 / 20%);
+  font-weight: 700;
+}
+
+.cpr-af-results-table .cpr-af-winner {
+  background: var(--cpr-text-chat-success, #2d9f36);
+  color: white;
+}
+
+.cpr-af-critical {
+  color: #ffd43b;
+}
+
+.cpr-af-fumble {
+  color: #ff5b5b;
+}
+
+.cpr-af-final {
+  margin-top: 0.35rem;
+  padding: 0.35rem;
+  font-weight: 700;
+}
+
+.cpr-af-final-failure {
+  background: var(--cpr-text-chat-failure, #b90202ff);
+}
+
+.cpr-af-damage {
+  margin-top: 0.25rem;
+}
+
+.cpr-af-native-damage-data {
+  display: none;
+}
+
+.cpr-af-damage-table {
+  margin-top: 0.3rem;
+}
+
+.cpr-af-native-rolls .rollcard > br,
+.cpr-af-native-rolls .rollcard > br ~ * {
+  display: none;
+}
+
+.cpr-af-damage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0.25rem 0.35rem;
+  font-weight: 700;
+}
+
+.cpr-af-apply-all {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cpr-af-apply-all:hover {
+  text-shadow: 0 0 5px currentcolor;
+}
+
+.cpr-af-apply-all.cpr-af-applying {
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.cpr-af-result,
+.cpr-af-outcome {
+  margin-top: 0.5rem;
+  padding: 0.4rem;
+  text-align: center;
+}
+
+.cpr-af-hit .cpr-af-outcome {
+  background: var(--cpr-text-chat-success, #2d9f36);
+}
+
+.cpr-af-miss .cpr-af-outcome {
+  background: var(--cpr-text-chat-failure, #b90202ff);
+}
+
 .cpr-af-core-grid strong {
   overflow-wrap: anywhere;
 }
