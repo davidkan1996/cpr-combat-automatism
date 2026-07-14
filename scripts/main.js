@@ -209,12 +209,77 @@ Hooks.on("getSceneControlButtons", (controls) => {
 Hooks.on("createChatMessage", async (message) => {
   if (await maybeSuppressNativeResultMessage(message)) return;
 
-  const declaration = message.getFlag(MODULE_ID, "attackDeclaration");
-  if (!declaration) return;
-  rememberAttackDeclaration(declaration);
-  if (shouldSkipDefenderPrompt(declaration)) return;
+  const declarations = message.getFlag(MODULE_ID, "attackDeclarations")
+    ?? [message.getFlag(MODULE_ID, "attackDeclaration")].filter(Boolean);
+  if (declarations.length === 0) return;
+  for (const declaration of declarations) rememberAttackDeclaration(declaration);
+  const declaration = declarations[0];
+  if (declarations.every(shouldSkipDefenderPrompt)) return;
   if (!game.user.isGM) return;
-  await routeDefenderPrompt(declaration);
+  for (const entry of declarations) {
+    if (!shouldSkipDefenderPrompt(entry)) await routeDefenderPrompt(entry);
+  }
+});
+
+Hooks.on("renderChatMessage", (_message, html) => {
+  const root = html.find?.(".cpr-af-declaration")?.first?.();
+  if (!root?.length) return;
+  root.find("[data-cpr-af-roll-detail]").on("click", (event) => {
+    event.preventDefault();
+    const detailId = event.currentTarget.dataset.cprAfRollDetail;
+    const panels = root.find("[data-cpr-af-detail-panel]");
+    const selected = panels.filter(`[data-cpr-af-detail-panel='${detailId}']`);
+    const wasVisible = !selected.hasClass("cpr-af-roll-detail-collapsed");
+    panels.prop("hidden", true).addClass("cpr-af-roll-detail-collapsed");
+    root.find("[data-cpr-af-roll-detail]").attr("aria-expanded", "false");
+    if (!wasVisible) {
+      selected.prop("hidden", false).removeClass("cpr-af-roll-detail-collapsed");
+      event.currentTarget.setAttribute("aria-expanded", "true");
+    }
+  });
+
+  root.find("[data-cpr-af-apply-damage]").on("click", async (event) => {
+    event.preventDefault();
+    const index = Number(event.currentTarget.dataset.cprAfApplyDamage);
+    const application = root.parent()
+      .find(".cpr-af-native-rolls [data-action='applyDamage'][data-scope='local']")
+      .get(index);
+    if (!application || !CPRChatClass) return;
+    await CPRChatClass.damageApplication({
+      currentTarget: application,
+      target: application,
+      ctrlKey: false,
+    });
+  });
+
+  const applyAllButton = root.parent().find("[data-cpr-af-apply-all]");
+  if (!game.user.isGM) {
+    applyAllButton.remove();
+    return;
+  }
+  applyAllButton.on("click", async (event) => {
+    event.preventDefault();
+    if (!game.user.isGM) return;
+    const button = event.currentTarget;
+    if (button.dataset.cprAfApplying === "true") return;
+    button.dataset.cprAfApplying = "true";
+    button.classList.add("cpr-af-applying");
+    try {
+      const applications = root.parent()
+        .find(".cpr-af-native-damage-data [data-action='applyDamage'][data-scope='local']")
+        .toArray();
+      for (const application of applications) {
+        await CPRChatClass.damageApplication({
+          currentTarget: application,
+          target: application,
+          ctrlKey: true,
+        });
+      }
+    } finally {
+      button.dataset.cprAfApplying = "false";
+      button.classList.remove("cpr-af-applying");
+    }
+  });
 });
 
 async function openAttackDialog() {
@@ -480,11 +545,17 @@ async function createAttackCards(attacker, targets, weapon, { dispatchPrompts = 
     skipDefenderPrompt: isSuppressive || isNetAttack,
   });
 
+  const message = await createAttackDeclarationMessage(attacker, declarations);
   for (const data of declarations) {
-    await createAttackDeclarationMessage(attacker, data);
-    if (data) attacks.push(data);
+    data.chatMessageId = message.id;
+    rememberAttackDeclaration(data);
+    attacks.push(data);
     if (dispatchPrompts && !isSuppressive && !isNetAttack) await dispatchDefenderPrompt(data);
   }
+
+  await message.update({
+    [`flags.${MODULE_ID}.attackDeclarations`]: declarations,
+  });
 
   if (dispatchPrompts && isSuppressive) {
     await startSuppressiveFireResolution(attacks);
@@ -529,6 +600,7 @@ async function buildAttackDeclaration(attacker, target, weapon, group, { skipDef
     attackerTokenId: attacker.document.id,
     attackerActorId: attacker.actor.id,
     attackerName: attacker.name,
+    declaringUserId: game.user.id,
     targetSceneId: canvas.scene.id,
     targetTokenId: target.document.id,
     targetActorId: target.actor.id,
@@ -557,20 +629,122 @@ async function buildAttackDeclaration(attacker, target, weapon, group, { skipDef
   return data;
 }
 
-async function createAttackDeclarationMessage(attacker, data) {
-  const content = await renderTemplate(TEMPLATES.declaration, data);
+async function createAttackDeclarationMessage(attacker, declarations) {
+  const content = await renderAttackFlowContent(declarations, {});
   const message = await ChatMessage.create({
     user: game.user.id,
     speaker: ChatMessage.getSpeaker({ token: attacker.document }),
     content,
     flags: {
       [MODULE_ID]: {
-        attackDeclaration: data,
+        attackDeclarations: declarations,
+        flowState: {},
       },
     },
   });
-  rememberAttackDeclaration(message.getFlag(MODULE_ID, "attackDeclaration") ?? data);
   return message;
+}
+
+async function renderAttackFlowContent(declarations, state = {}) {
+  const rows = (state.rows ?? declarations.map((entry) => ({ targetName: entry.targetName, dv: entry.dvLabel })))
+    .map((row, index) => ({ ...row, defenseDetailId: `defense-${index}` }));
+  const declarationContent = await renderTemplate(TEMPLATES.declaration, {
+    declarations,
+    isMultiTarget: declarations.length > 1,
+    rows,
+    resolved: Boolean(state.resolved),
+    allMissed: Boolean(state.resolved && !state.hitTargets?.length),
+    hitTargets: state.hitTargets ?? [],
+    attackDetails: state.attackDetails,
+    damageRows: state.damageRows ?? [],
+    damageDetails: state.damageDetails,
+  });
+  return `${declarationContent}${state.damageHtml ? `<div class="cpr-af-damage cpr-af-native-damage-data" aria-hidden="true"><div class="cpr-af-native-rolls">${state.damageHtml}</div></div>` : ""}`;
+}
+
+function getRollDetails(roll) {
+  if (!roll) return null;
+  const initialRoll = Number(roll.initialRoll);
+  const criticalRoll = Number(roll.criticalRoll);
+  const total = Number(roll.resultTotal);
+  const modifierTotal = typeof roll.totalMods === "function" ? Number(roll.totalMods()) : null;
+  const components = [];
+  const addComponent = (label, value, { includeZero = false } = {}) => {
+    const number = Number(value);
+    if (!Number.isFinite(number) || (!includeZero && number === 0)) return;
+    components.push({ label, value: number, signedValue: number >= 0 ? `+${number}` : String(number) });
+  };
+  if (Object.hasOwn(roll, "statValue")) addComponent(roll.statName || "Característica", roll.statValue, { includeZero: true });
+  if (Object.hasOwn(roll, "skillValue")) addComponent(roll.skillName || "Habilidad", roll.skillValue, { includeZero: true });
+  if (Object.hasOwn(roll, "roleValue")) addComponent(roll.roleName || "Interface", roll.roleValue, { includeZero: true });
+  addComponent("Suerte", roll.luck);
+  for (const mod of roll.mods ?? []) {
+    const source = game.i18n?.localize?.(mod.source) ?? mod.source ?? "Modificador";
+    addComponent(source, mod.value);
+  }
+  for (const mod of roll.additionalMods ?? []) addComponent("Modificador adicional", mod);
+  if (Number.isFinite(criticalRoll) && criticalRoll !== 0) {
+    addComponent(initialRoll === 1 ? "Pifia" : "Crítico", initialRoll === 1 ? -criticalRoll : criticalRoll);
+  }
+  return {
+    initialRoll: Number.isFinite(initialRoll) ? initialRoll : null,
+    criticalRoll: Number.isFinite(criticalRoll) && criticalRoll !== 0 ? criticalRoll : null,
+    modifierTotal: Number.isFinite(modifierTotal) ? modifierTotal : null,
+    total: Number.isFinite(total) ? total : null,
+    isCritical: initialRoll === 10,
+    isFumble: initialRoll === 1,
+    components,
+  };
+}
+
+function getDamageRollDetails(roll) {
+  if (!roll) return null;
+  const total = Number(roll.resultTotal);
+  const modifierTotal = typeof roll.totalMods === "function" ? Number(roll.totalMods()) : 0;
+  const bonusDamage = roll.wasCritical?.() ? Number(roll.bonusDamage ?? 0) : 0;
+  return {
+    formula: String(roll.formula ?? ""),
+    faces: Array.isArray(roll.faces) ? roll.faces.map(Number).filter(Number.isFinite) : [],
+    modifierTotal: Number.isFinite(modifierTotal) ? modifierTotal : 0,
+    bonusDamage: Number.isFinite(bonusDamage) ? bonusDamage : 0,
+    total: Number.isFinite(total) ? total : null,
+    isCritical: roll.wasCritical?.() === true,
+  };
+}
+
+function createOutcomeRows(outcomes, attackRoll, defenseDetails = new Map()) {
+  return outcomes.map(({ choice, comparison, hit }) => ({
+    targetName: choice.targetName,
+    dv: choice.dv || "-",
+    evasion: comparison.mode === "evasion" ? comparison.target : "-",
+    attack: attackRoll.resultTotal,
+    dvWins: !hit && comparison.mode === "dv",
+    evasionWins: !hit && comparison.mode === "evasion",
+    attackWins: hit,
+    attackDetails: getRollDetails(attackRoll),
+    defenseDetails: defenseDetails.get(choice.attackId) ?? null,
+  }));
+}
+
+async function updateAttackFlowMessage(data, patch = {}) {
+  const message = getAttackFlowMessage(data);
+  if (!message) return null;
+  const declarations = message.getFlag(MODULE_ID, "attackDeclarations") ?? [data];
+  const previous = message.getFlag(MODULE_ID, "flowState") ?? {};
+  const state = { ...previous, ...patch };
+  await message.update({
+    content: await renderAttackFlowContent(declarations, state),
+    [`flags.${MODULE_ID}.flowState`]: state,
+  });
+  return message;
+}
+
+function getAttackFlowMessage(data) {
+  if (data?.chatMessageId) return game.messages?.get?.(data.chatMessageId) ?? null;
+  return getCollectionValues(game.messages).find((message) => {
+    const declarations = message.getFlag?.(MODULE_ID, "attackDeclarations") ?? [];
+    return declarations.some((entry) => entry.attackId === data?.attackId);
+  }) ?? null;
 }
 
 async function startSuppressiveFireResolution(attacks) {
@@ -642,6 +816,12 @@ async function showDefenderPrompt(data) {
           html.closest(".app").find(".close").trigger("click");
           await submitDefenderChoice(data, action);
         });
+      },
+      close: async () => {
+        const key = data.attackId;
+        if (processedActions.has(key)) return;
+        processedActions.add(key);
+        await submitDefenderChoice(data, "no-evade");
       },
     });
     dialog.render(true);
@@ -794,12 +974,14 @@ async function collectGroupEvasionsOrResolve(groupId, entry) {
 }
 
 async function rollGroupEvasion(data) {
-  const evasionTotal = await rollDefenseForData(data);
+  const defense = await rollDefenseForData(data);
+  const evasionTotal = defense?.total;
 
   const payload = {
     ...data,
     evasionTotal: Number.isFinite(evasionTotal) ? evasionTotal : null,
     evasionFailed: !Number.isFinite(evasionTotal),
+    defenseDetails: defense?.details ?? null,
   };
   if (data.resolverUserId === game.user.id) {
     await recordGroupEvasion(payload);
@@ -815,6 +997,8 @@ async function recordGroupEvasion(data) {
 
   entry.evasions ??= new Map();
   entry.evasions.set(data.attackId, data.evasionTotal);
+  entry.defenseDetails ??= new Map();
+  entry.defenseDetails.set(data.attackId, data.defenseDetails ?? null);
   const contestedDefenders = Array.from(entry.choices.values()).filter((choice) => CONTESTED_DEFENDER_ACTIONS.has(choice.defenderAction));
   if (entry.evasions.size >= contestedDefenders.length) {
     if (entry.resolvingFinal) return;
@@ -851,20 +1035,21 @@ async function resolveAttackGroup(groupId, entry) {
       }
     }
 
-    for (const outcome of outcomes) {
-      await simpleMessage(formatAttackOutcomeMessage(
-        context.actor,
-        outcome.choice.targetName,
-        attackRoll.resultTotal,
-        outcome.comparison,
-        outcome.hit,
-        entry,
-      ), { outcome: outcome.hit });
-    }
+    await updateAttackFlowMessage(choices[0], {
+      resolved: true,
+      rows: createOutcomeRows(outcomes, attackRoll, entry.defenseDetails),
+      hitTargets: hits.map((hit) => hit.targetName),
+      attackDetails: getRollDetails(attackRoll),
+    });
 
     if (hits.length === 0 || entry.skipDamage) return;
 
-    await rollDamageForHits(context, hits, attackRoll);
+    const damageRoll = await rollDamageForHits(context, hits, attackRoll);
+    if (damageRoll) await updateAttackFlowMessage(choices[0], {
+      damageHtml: damageRoll.cprAutomatismHtml,
+      damageRows: hits.map((hit) => ({ targetName: hit.targetName, damage: damageRoll.resultTotal })),
+      damageDetails: getDamageRollDetails(damageRoll),
+    });
   } finally {
     pendingAttackGroups.delete(groupId);
     resolvingAttackGroups.delete(groupId);
@@ -933,6 +1118,10 @@ async function pickEvasionRoller(data) {
 
 function pickAttackResolver(data) {
   const attacker = getActorById(data.attackerActorId);
+  const declaringUser = getUserById(data.declaringUserId);
+  if (declaringUser?.active && (declaringUser.isGM || attacker?.testUserPermission(declaringUser, "OWNER"))) {
+    return declaringUser.id;
+  }
   const activeOwner = attacker
     ? game.users.find((user) => user.active && !user.isGM && attacker.testUserPermission(user, "OWNER"))
     : null;
@@ -954,22 +1143,33 @@ async function resolveNoEvade(data) {
 
   const comparison = { mode: "dv", target: dv, label: "DV" };
   const hit = attackRoll.resultTotal >= dv;
-  await simpleMessage(formatAttackOutcomeMessage(context.actor, data.targetName, attackRoll.resultTotal, comparison, hit), { outcome: hit });
+  await updateAttackFlowMessage(data, {
+    resolved: true,
+    rows: createOutcomeRows([{ choice: data, comparison, hit }], attackRoll),
+    hitTargets: hit ? [data.targetName] : [],
+    attackDetails: getRollDetails(attackRoll),
+  });
   if (hit) {
-    await rollDamageForHits(context, [{
+    const damageRoll = await rollDamageForHits(context, [{
       ...data,
       autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, dv),
     }], attackRoll);
+    if (damageRoll) await updateAttackFlowMessage(data, {
+      damageHtml: damageRoll.cprAutomatismHtml,
+      damageRows: [{ targetName: data.targetName, damage: damageRoll.resultTotal }],
+      damageDetails: getDamageRollDetails(damageRoll),
+    });
   }
 }
 
 async function rollEvasionAndContinue(data) {
   const defendedData = { ...data, defenderAction: data.defenderAction ?? "evade" };
-  const evasionTotal = await rollDefenseForData(defendedData);
+  const defense = await rollDefenseForData(defendedData);
+  const evasionTotal = defense?.total;
   if (!Number.isFinite(evasionTotal)) return;
 
   const resolver = pickAttackResolver(defendedData);
-  const payload = { ...defendedData, evasionTotal };
+  const payload = { ...defendedData, evasionTotal, defenseDetails: defense?.details ?? null };
   if (resolver === game.user.id) {
     await resolveAgainstEvasion(payload);
     return;
@@ -988,7 +1188,7 @@ async function rollDefenseForData(data) {
 
   if (data.defenderAction === "net-defense") {
     const defenseRoll = await rollNetrunningDefense(actor, defender, data);
-    return defenseRoll?.resultTotal ?? null;
+    return defenseRoll ? { total: defenseRoll.resultTotal, details: getRollDetails(defenseRoll) } : null;
   }
 
   const defenseSkill = findDefenseSkill(actor, data);
@@ -998,7 +1198,7 @@ async function rollDefenseForData(data) {
   }
 
   const defenseRoll = await rollNative(actor, defenseSkill, "skill");
-  return defenseRoll?.resultTotal ?? null;
+  return defenseRoll ? { total: defenseRoll.resultTotal, details: getRollDetails(defenseRoll) } : null;
 }
 
 async function rollNetrunningDefense(actor, defender, data) {
@@ -1081,12 +1281,26 @@ async function resolveAgainstEvasion(data) {
   const evasionTotal = Number(data.evasionTotal);
   const comparison = { mode: "evasion", target: evasionTotal, label: getDefenseLabel(defendedData) };
   const hit = attackRoll.resultTotal > evasionTotal;
-  await simpleMessage(formatAttackOutcomeMessage(context.actor, defendedData.targetName, attackRoll.resultTotal, comparison, hit), { outcome: hit });
+  await updateAttackFlowMessage(defendedData, {
+    resolved: true,
+    rows: createOutcomeRows(
+      [{ choice: defendedData, comparison, hit }],
+      attackRoll,
+      new Map([[defendedData.attackId, defendedData.defenseDetails]]),
+    ),
+    hitTargets: hit ? [defendedData.targetName] : [],
+    attackDetails: getRollDetails(attackRoll),
+  });
   if (hit) {
-    await rollDamageForHits(context, [{
+    const damageRoll = await rollDamageForHits(context, [{
       ...defendedData,
       autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, evasionTotal),
     }], attackRoll);
+    if (damageRoll) await updateAttackFlowMessage(defendedData, {
+      damageHtml: damageRoll.cprAutomatismHtml,
+      damageRows: [{ targetName: defendedData.targetName, damage: damageRoll.resultTotal }],
+      damageDetails: getDamageRollDetails(damageRoll),
+    });
   }
 }
 
@@ -1259,7 +1473,8 @@ async function renderFinalizedNativeRoll(cprRoll, actor, { itemId = "", tokens =
   cprRoll.entityData = ChatMessage.getSpeaker({ actor });
   cprRoll.entityData.item = itemId;
   cprRoll.entityData.tokens = tokens;
-  await CPRChatClass.RenderRollCard(cprRoll);
+  cprRoll.criticalCard = cprRoll.wasCritical();
+  cprRoll.cprAutomatismHtml = await renderTemplate(cprRoll.rollCard, cprRoll);
 }
 
 function getNativeRollType(actor, item, rollType) {
@@ -1961,9 +2176,14 @@ async function getKnownAttackDeclaration(attackId) {
     const cached = knownAttackDeclarations.get(attackId);
     if (cached) return foundry.utils.deepClone(cached);
 
-    const message = getCollectionValues(game.messages)
-      .find((entry) => entry.getFlag?.(MODULE_ID, "attackDeclaration")?.attackId === attackId);
-    const declaration = message?.getFlag?.(MODULE_ID, "attackDeclaration");
+    const message = getCollectionValues(game.messages).find((entry) => {
+      const declarations = entry.getFlag?.(MODULE_ID, "attackDeclarations") ?? [];
+      return declarations.some((declaration) => declaration.attackId === attackId)
+        || entry.getFlag?.(MODULE_ID, "attackDeclaration")?.attackId === attackId;
+    });
+    const declaration = (message?.getFlag?.(MODULE_ID, "attackDeclarations") ?? [])
+      .find((entry) => entry.attackId === attackId)
+      ?? message?.getFlag?.(MODULE_ID, "attackDeclaration");
     if (declaration) {
       rememberAttackDeclaration(declaration);
       return foundry.utils.deepClone(declaration);
@@ -2035,11 +2255,33 @@ async function getTrustedSocketData(data) {
     defenderAction: data.defenderAction,
     evasionTotal: data.evasionTotal,
     evasionFailed: Boolean(data.evasionFailed),
+    defenseDetails: sanitizeRollDetails(data.defenseDetails),
     resolverUserId: data.resolverUserId,
   };
 
   if (trusted.defenderAction && !["evade", "no-evade", "concentration", "net-defense"].includes(trusted.defenderAction)) return null;
   return trusted;
+}
+
+function sanitizeRollDetails(details) {
+  if (!details || typeof details !== "object") return null;
+  const numberOrNull = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+  return {
+    initialRoll: numberOrNull(details.initialRoll),
+    criticalRoll: numberOrNull(details.criticalRoll),
+    modifierTotal: numberOrNull(details.modifierTotal),
+    total: numberOrNull(details.total),
+    isCritical: details.isCritical === true,
+    isFumble: details.isFumble === true,
+    components: Array.isArray(details.components) ? details.components.slice(0, 30).map((component) => {
+      const value = numberOrNull(component?.value);
+      return {
+        label: String(component?.label ?? "Modificador").slice(0, 100),
+        value,
+        signedValue: value === null ? "" : value >= 0 ? `+${value}` : String(value),
+      };
+    }).filter((component) => component.value !== null) : [],
+  };
 }
 
 function getUserById(userId) {
@@ -2084,6 +2326,7 @@ export const __test__ = {
   findDefenseSkill,
   formatAttackOutcomeMessage,
   getOutcomeMessageStyle,
+  getRollDetails,
   getNativeResultSuppressionKey,
   getCollectionValues,
   getCyberdecks,

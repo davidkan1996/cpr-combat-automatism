@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Unified each attack flow into one progressively updated chat message instead of separate declaration, result and damage messages.
+- Added a compact target table comparing DV, Evasion and Attack, with the winning result highlighted per target.
+- Added on-demand roll breakdowns for Attack, Evasion and Damage; only one breakdown can be visible at a time.
+- Added critical and fumble indicators, including native CPR critical detection for damage rolls.
+- Added a compact damage table with one native damage action per hit target.
+- Added a GM-only Apply to all action for applying native CPR damage to every hit target.
+- Preserved native armor, ablation, ammunition, aimed-location and critical-damage handling while hiding duplicated native chat output.
+- Changed closing the defender choice prompt to resolve as No evade.
+- Consolidated multi-target declarations and results into a single chat card.
+- Added regression coverage for native CPR roll breakdown components.
+
 ## v0.1.10
 
 - Added native netrunning attack support for Zap, attacker programs and Black ICE ATK.

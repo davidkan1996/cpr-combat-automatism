@@ -5,13 +5,18 @@ A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon and netrunnin
 ## Features
 
 - Selects the attacker from the controlled token.
-- Selects the defender from the current target.
+- Selects one or more defenders from the current targets.
 - Shows the attack weapon, damage, skill, range and DV before resolving.
 - Lets the defender choose between No evade and Evade in a popup.
 - Uses native Cyberpunk RED CORE rolls for attacks, Evasion and damage.
+- Keeps declaration, attack comparison and damage in one progressively updated chat message.
+- Shows a compact per-target table comparing DV, Evasion and Attack, highlighting the winning value.
+- Expands Attack, Evasion and Damage breakdowns on demand, with critical and fumble indicators.
+- Treats closing the defender prompt as No evade.
+- Provides native per-target damage controls and a GM-only Apply to all action.
 - Supports native netrunning attacks for Zap, attacker programs and Black ICE ATK.
 - Resolves netrunning defenses with native Interface or Black ICE DEF rollcards.
-- Leaves damage application, armor, criticals and ablation to the native damage card.
+- Leaves damage application, armor, criticals and ablation to the native CPR damage handler.
 
 ## Installation
 
@@ -33,6 +38,8 @@ https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.10/
 3. Use the CPR Combat Automatism token control.
 4. Choose a weapon and create the attack.
 5. The defender, or the GM fallback, chooses whether to evade.
+6. Click an Attack, Evasion or Damage result to inspect its roll breakdown.
+7. Apply damage from the lightning icon beside each hit target; the GM can apply it to all hit targets at once.
 
 ## Public API
 

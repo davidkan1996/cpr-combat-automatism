@@ -602,6 +602,31 @@ test("getOutcomeMessageStyle returns controlled hit and miss chat colors", () =>
   assert.equal(__test__.getOutcomeMessageStyle(null), "");
 });
 
+test("roll details include every component used by native CPR skill totals", () => {
+  const roll = {
+    initialRoll: 7,
+    criticalRoll: 0,
+    resultTotal: 18,
+    statName: "REF",
+    statValue: 8,
+    skillName: "Handgun",
+    skillValue: 4,
+    luck: 1,
+    mods: [{ source: "Range", value: -2 }],
+    additionalMods: [],
+    totalMods: () => -2,
+  };
+
+  const details = __test__.getRollDetails(roll);
+  assert.deepEqual(details.components.map(({ label, value }) => ({ label, value })), [
+    { label: "REF", value: 8 },
+    { label: "Handgun", value: 4 },
+    { label: "Suerte", value: 1 },
+    { label: "Range", value: -2 },
+  ]);
+  assert.equal(details.total, 18);
+});
+
 test("native DV result suppression only matches Diwako attacker and target results", () => {
   const key = __test__.getNativeResultSuppressionKey("Solo", "Target");
   const hitHtml = '<div class="cpr-block" style="padding:10px;background-color:var(--cpr-text-chat-success, #2d9f36)"><b>Solo <span class="fg-green">hits</span> Target</b> (DV: 13, 5 over)! Roll Damage!</div>';
