@@ -2308,7 +2308,7 @@ async function onSocket(message) {
   if (trusted.type === "resolveAgainstEvasion") await resolveAgainstEvasion(trusted.data);
 }
 
-export const __test__ = {
+export {
   escapeHtml,
   applyAimedLocation,
   applyAutofireMultiplier,

@@ -68,7 +68,7 @@ globalThis.CONST = {
   DOCUMENT_OWNERSHIP_LEVELS: { OWNER: 3 },
 };
 
-const { __test__ } = await import("../scripts/main.js");
+const __test__ = await import("../scripts/main.js");
 
 const declaration = {
   attackId: "attack-1",
