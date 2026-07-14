@@ -16,9 +16,10 @@
     <div class="cpr-block">
       <div class="cpr-af-attack-summary text-small">
         <span>Atacante</span><strong>{{declarations.0.attackerName}}</strong>
-        <span>Arma</span><strong>{{declarations.0.weaponTypeLabel}}</strong>
-        <span>Daño</span><strong>{{declarations.0.damage}}</strong>
         <span>Habilidad</span><strong>{{declarations.0.skill}}</strong>
+        <span>Arma</span><strong>{{declarations.0.weaponTypeLabel}}</strong>
+        <span>Acción</span><strong>{{declarations.0.action}}</strong>
+        <span>Daño</span><strong>{{declarations.0.damage}}</strong>
       </div>
 
       <table class="cpr-af-results-table">
@@ -59,22 +60,34 @@
         {{#if attackDetails}}
           <div class="cpr-af-roll-detail cpr-af-roll-detail-collapsed" data-cpr-af-detail-panel="attack" hidden>
             <strong>Tirada de ataque</strong>
-            <div>Dado: {{attackDetails.initialRoll}}</div>
+            <div class="cpr-af-roll-detail-row">
+              <span>Dado</span><span class="cpr-af-roll-detail-value">{{attackDetails.initialRoll}}</span>
+            </div>
             {{#each attackDetails.components as |component|}}
-              <div>{{component.label}}: {{component.signedValue}}</div>
+              <div class="cpr-af-roll-detail-row">
+                <span>{{component.label}}</span><span class="cpr-af-roll-detail-value">{{component.signedValue}}</span>
+              </div>
             {{/each}}
-            <div class="cpr-af-roll-total">Total: {{attackDetails.total}}</div>
+            <div class="cpr-af-roll-detail-row cpr-af-roll-total">
+              <span>Total</span><span class="cpr-af-roll-detail-value">{{attackDetails.total}}</span>
+            </div>
           </div>
         {{/if}}
         {{#each rows as |row|}}
           {{#if row.defenseDetails}}
             <div class="cpr-af-roll-detail cpr-af-roll-detail-collapsed" data-cpr-af-detail-panel="{{row.defenseDetailId}}" hidden>
               <strong>Evasión de {{row.targetName}}</strong>
-              <div>Dado: {{row.defenseDetails.initialRoll}}</div>
+              <div class="cpr-af-roll-detail-row">
+                <span>Dado</span><span class="cpr-af-roll-detail-value">{{row.defenseDetails.initialRoll}}</span>
+              </div>
               {{#each row.defenseDetails.components as |component|}}
-                <div>{{component.label}}: {{component.signedValue}}</div>
+                <div class="cpr-af-roll-detail-row">
+                  <span>{{component.label}}</span><span class="cpr-af-roll-detail-value">{{component.signedValue}}</span>
+                </div>
               {{/each}}
-              <div class="cpr-af-roll-total">Total: {{row.defenseDetails.total}}</div>
+              <div class="cpr-af-roll-detail-row cpr-af-roll-total">
+                <span>Total</span><span class="cpr-af-roll-detail-value">{{row.defenseDetails.total}}</span>
+              </div>
             </div>
           {{/if}}
         {{/each}}
@@ -117,15 +130,32 @@
         {{#if damageDetails}}
           <div class="cpr-af-roll-detail cpr-af-roll-detail-collapsed" data-cpr-af-detail-panel="damage" hidden>
             <strong>Tirada de daño</strong>
-            {{#if damageDetails.formula}}<div>Fórmula: {{damageDetails.formula}}</div>{{/if}}
-            {{#if damageDetails.faces.length}}
-              <div>Dados:
-                {{#each damageDetails.faces as |face|}}{{face}}{{#unless @last}}, {{/unless}}{{/each}}
+            {{#if damageDetails.formula}}
+              <div class="cpr-af-roll-detail-row">
+                <span>Fórmula</span><span class="cpr-af-roll-detail-value">{{damageDetails.formula}}</span>
               </div>
             {{/if}}
-            {{#if damageDetails.modifierTotal}}<div>Modificadores: {{damageDetails.modifierTotal}}</div>{{/if}}
-            {{#if damageDetails.bonusDamage}}<div>Daño crítico: +{{damageDetails.bonusDamage}}</div>{{/if}}
-            <div class="cpr-af-roll-total">Total: {{damageDetails.total}}</div>
+            {{#if damageDetails.faces.length}}
+              <div class="cpr-af-roll-detail-row">
+                <span>Dados</span>
+                <span class="cpr-af-roll-detail-value">
+                  {{#each damageDetails.faces as |face|}}{{face}}{{#unless @last}}, {{/unless}}{{/each}}
+                </span>
+              </div>
+            {{/if}}
+            {{#if damageDetails.modifierTotal}}
+              <div class="cpr-af-roll-detail-row">
+                <span>Modificadores</span><span class="cpr-af-roll-detail-value">{{damageDetails.modifierTotal}}</span>
+              </div>
+            {{/if}}
+            {{#if damageDetails.bonusDamage}}
+              <div class="cpr-af-roll-detail-row">
+                <span>Daño crítico</span><span class="cpr-af-roll-detail-value">+{{damageDetails.bonusDamage}}</span>
+              </div>
+            {{/if}}
+            <div class="cpr-af-roll-detail-row cpr-af-roll-total">
+              <span>Total</span><span class="cpr-af-roll-detail-value">{{damageDetails.total}}</span>
+            </div>
           </div>
         {{/if}}
       {{/if}}

@@ -77,10 +77,16 @@
 
 .cpr-af-attack-summary {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   gap: 0.1rem 0.4rem;
+  padding-top: 0.6rem;
   margin-bottom: 0.35rem;
   line-height: 1.15;
+}
+
+.cpr-af-attack-summary strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .cpr-af-results-table {
@@ -115,6 +121,24 @@
   border: 1px solid rgb(255 255 255 / 20%);
   background: rgb(0 0 0 / 18%);
   font-size: 0.8rem;
+  text-align: left;
+}
+
+.cpr-af-roll-detail > strong {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+
+.cpr-af-roll-detail-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.cpr-af-roll-detail-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .cpr-af-roll-detail[hidden],

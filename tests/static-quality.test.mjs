@@ -38,6 +38,11 @@ test("socket receiver validates before dispatching handlers", () => {
   assert.match(main, /SOCKET_MESSAGE_TYPES\.has\(message\.type\)/);
 });
 
+test("defender actions close the dialog directly", () => {
+  assert.match(main, /await dialog\.close\(\);\s+await submitDefenderChoice\(data, action\);/);
+  assert.equal(main.includes('find(".close").trigger("click")'), false);
+});
+
 test("templates do not opt out of Handlebars escaping", () => {
   const templates = filesUnder(join(root, "templates")).filter((path) => path.endsWith(".hbs"));
   for (const template of templates) {

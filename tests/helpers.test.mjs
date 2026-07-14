@@ -225,6 +225,8 @@ test("netrunning declarations carry cyberdeck and program data without DV", asyn
 
   assert.equal(data.attackKind, "netrunning");
   assert.equal(data.netAction, "program");
+  assert.equal(data.weaponName, "Sword");
+  assert.equal(data.action, "Attack");
   assert.equal(data.cyberdeckId, "deck-1");
   assert.equal(data.programId, "sword");
   assert.equal(data.programUuid, "Actor.runner.Item.sword");
@@ -567,6 +569,25 @@ test("group comparisons use evasion totals for evading targets even when a DV ex
     target: 18,
     label: "Evasion",
   });
+});
+
+test("attack totals must exceed DV or opposed defense totals", () => {
+  assert.equal(__test__.isAttackHit(14, 13), true);
+  assert.equal(__test__.isAttackHit(13, 13), false);
+  assert.equal(__test__.isAttackHit(12, 13), false);
+  assert.equal(__test__.isAttackHit(null, 13), false);
+});
+
+test("attack action labels follow native weapon and netrunning modes", () => {
+  const rangedWeapon = { id: "pistol", system: { isRanged: true, weaponType: "heavyPistol" } };
+  const meleeWeapon = { id: "blade", system: { isRanged: false, weaponType: "heavyMelee" } };
+  const autofireActor = { getFlag: () => "autofire" };
+
+  assert.equal(__test__.getAttackActionLabel(null, rangedWeapon), "Single Shot");
+  assert.equal(__test__.getAttackActionLabel(null, meleeWeapon), "Melee Attack");
+  assert.equal(__test__.getAttackActionLabel(autofireActor, rangedWeapon), "Autofire");
+  assert.equal(__test__.getAttackActionLabel(null, { type: "netrunning", netAction: "zap" }), "Zap");
+  assert.equal(__test__.getAttackActionLabel(null, { type: "netrunning", netAction: "program" }), "Attack");
 });
 
 test("attack outcome messages use the actual comparison target", () => {

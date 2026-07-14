@@ -491,9 +491,39 @@ function buildNetrunningAttackView(option, _attacker, target) {
 }
 
 function getNetrunningAttackSkillLabel(option) {
-  if (option?.netAction === "blackice") return "ATK";
-  if (option?.netAction === "program") return "Interface + ATK";
-  return "Interface";
+  return option?.netAction === "blackice" ? "Atk" : "Interface";
+}
+
+function getAttackActionLabel(actor, option) {
+  if (isNetrunningAttack(option)) {
+    if (option.netAction === "zap") {
+      return localizeSystemLabel("CPR.global.role.netrunner.interfaceAbility.zap", "Zap");
+    }
+    return localizeSystemLabel("CPR.rolls.attack", "Attack");
+  }
+
+  const fireMode = getNativeRollType(actor, option, "attack");
+  const fireModeLabels = {
+    aimed: ["CPR.rolls.aimedShot", "Aimed Shot"],
+    autofire: ["CPR.global.itemType.skill.autofire", "Autofire"],
+    suppressive: ["CPR.rolls.suppressiveFire", "Suppressive Fire"],
+  };
+  if (fireModeLabels[fireMode]) {
+    return localizeSystemLabel(...fireModeLabels[fireMode]);
+  }
+
+  if (option.system?.weaponType === "thrownWeapon") {
+    return localizeSystemLabel("CPR.effectSheet.combat.stats.ranged", "Ranged Attack");
+  }
+  if (!option.system?.isRanged) {
+    return localizeSystemLabel("CPR.effectSheet.combat.stats.melee", "Melee Attack");
+  }
+  return localizeSystemLabel("CPR.effectSheet.combat.stats.singleShot", "Single Shot");
+}
+
+function localizeSystemLabel(key, fallback) {
+  const localized = game.i18n?.localize?.(key);
+  return localized && localized !== key ? localized : fallback;
 }
 
 function getNetrunningDefenseLabel(actor) {
@@ -607,7 +637,7 @@ async function buildAttackDeclaration(attacker, target, weapon, group, { skipDef
     targetBaseActorId: target.document.actorId,
     targetName: target.name,
     weaponId: getItemId(weapon),
-    weaponName: weapon.name,
+    weaponName: weapon.program?.name ?? (weapon.netAction === "zap" ? "Zap" : weapon.name),
     weaponTypeLabel: getWeaponTypeLabel(weapon),
     attackKind: isNetrunningAttack(weapon) ? "netrunning" : "weapon",
     netAction: weapon.netAction ?? "",
@@ -616,6 +646,7 @@ async function buildAttackDeclaration(attacker, target, weapon, group, { skipDef
     programUuid: weapon.program?.uuid ?? "",
     damage: view.damage,
     skill: view.skill,
+    action: getAttackActionLabel(attacker.actor, weapon),
     distance: view.distance,
     distanceLabel: view.distanceLabel ?? formatDistance(view.distance),
     dv: view.dv ?? "",
@@ -813,7 +844,7 @@ async function showDefenderPrompt(data) {
           if (processedActions.has(key)) return;
           processedActions.add(key);
           html.find("[data-cpr-af-action]").prop("disabled", true);
-          html.closest(".app").find(".close").trigger("click");
+          await dialog.close();
           await submitDefenderChoice(data, action);
         });
       },
@@ -1023,9 +1054,7 @@ async function resolveAttackGroup(groupId, entry) {
       const comparison = getGroupComparison(choice, entry);
       if (!comparison) continue;
 
-      const hit = comparison.mode === "dv"
-        ? attackRoll.resultTotal >= comparison.target
-        : attackRoll.resultTotal > comparison.target;
+      const hit = isAttackHit(attackRoll.resultTotal, comparison.target);
       outcomes.push({ choice, comparison, hit });
       if (hit) {
         hits.push({
@@ -1087,6 +1116,12 @@ function getGroupComparison(choice, entry) {
   return { mode: "dv", target: dv };
 }
 
+function isAttackHit(attackTotal, defenseTotal) {
+  const attack = Number(attackTotal);
+  const defense = Number(defenseTotal);
+  return Number.isFinite(attack) && Number.isFinite(defense) && attack > defense;
+}
+
 async function resolveEvadeChoice(data) {
   const payload = { ...data, defenderAction: "evade" };
   const defender = await resolveToken(data.targetSceneId, data.targetTokenId, data.targetActorId);
@@ -1142,7 +1177,7 @@ async function resolveNoEvade(data) {
   }
 
   const comparison = { mode: "dv", target: dv, label: "DV" };
-  const hit = attackRoll.resultTotal >= dv;
+  const hit = isAttackHit(attackRoll.resultTotal, dv);
   await updateAttackFlowMessage(data, {
     resolved: true,
     rows: createOutcomeRows([{ choice: data, comparison, hit }], attackRoll),
@@ -1280,7 +1315,7 @@ async function resolveAgainstEvasion(data) {
 
   const evasionTotal = Number(data.evasionTotal);
   const comparison = { mode: "evasion", target: evasionTotal, label: getDefenseLabel(defendedData) };
-  const hit = attackRoll.resultTotal > evasionTotal;
+  const hit = isAttackHit(attackRoll.resultTotal, evasionTotal);
   await updateAttackFlowMessage(defendedData, {
     resolved: true,
     rows: createOutcomeRows(
@@ -2322,6 +2357,7 @@ export {
   getDefenseLabel,
   getDefenseSkillNames,
   getGroupComparison,
+  isAttackHit,
   findWeaponBySelection,
   findDefenseSkill,
   formatAttackOutcomeMessage,
@@ -2335,6 +2371,7 @@ export {
   getNetrunningAttackOptions,
   getNetrunningDamageLabel,
   getNetrunningAttackSkillLabel,
+  getAttackActionLabel,
   getBaseNetrunningDefenseRollConfig,
   hasDiwakoResultTraits,
   isNetrunningAttack,
