@@ -33,6 +33,7 @@ globalThis.window = { setTimeout };
 globalThis.foundry = {
   utils: {
     deepClone: (value) => JSON.parse(JSON.stringify(value)),
+    randomID: () => "random-id",
   },
 };
 globalThis.Hooks = {
@@ -67,7 +68,7 @@ globalThis.CONST = {
   DOCUMENT_OWNERSHIP_LEVELS: { OWNER: 3 },
 };
 
-const { __test__ } = await import("../scripts/main.js");
+const __test__ = await import("../scripts/main.js");
 
 const declaration = {
   attackId: "attack-1",
@@ -148,6 +149,141 @@ test("public API normalizes explicit attacker target and weapon input", () => {
   assert.deepEqual(request.targets, [targetToken]);
   assert.equal(request.weapon, weapon);
   assert.deepEqual(__test__.normalizeTargetList(new Set([targetToken])), [targetToken]);
+});
+
+test("netrunning attack options include Zap and attacker programs", () => {
+  const attacker = {
+    items: [
+      {
+        id: "deck-1",
+        type: "cyberdeck",
+        name: "Cyberdeck",
+        system: {
+          installedPrograms: [
+            {
+              id: "sword",
+              type: "program",
+              name: "Sword",
+              system: { class: "antipersonnelattacker", damage: { standard: "3d6", blackIce: "2d6" } },
+            },
+            {
+              id: "armor",
+              type: "program",
+              name: "Armor",
+              system: { class: "defender", damage: { standard: "", blackIce: "" } },
+            },
+          ],
+        },
+      },
+    ],
+  };
+
+  const options = __test__.getNetrunningAttackOptions(attacker);
+
+  assert.deepEqual(options.map((option) => option.netAction), ["zap", "program"]);
+  assert.equal(options[0].name, "Zap (Cyberdeck)");
+  assert.equal(options[1].program.name, "Sword");
+  assert.equal(__test__.isNetrunningAttackerProgram(attacker.items[0].system.installedPrograms[0]), true);
+  assert.equal(__test__.isNetrunningAttackerProgram(attacker.items[0].system.installedPrograms[1]), false);
+});
+
+test("netrunning declarations carry cyberdeck and program data without DV", async () => {
+  const program = {
+    id: "sword",
+    uuid: "Actor.runner.Item.sword",
+    type: "program",
+    name: "Sword",
+    system: { class: "antiprogramattacker", damage: { standard: "3d6", blackIce: "2d6" } },
+  };
+  const cyberdeck = {
+    id: "deck-1",
+    type: "cyberdeck",
+    name: "Cyberdeck",
+  };
+  const option = {
+    id: "net-program-deck-1-sword",
+    name: "Sword (Cyberdeck)",
+    type: "netrunning",
+    netAction: "program",
+    cyberdeck,
+    program,
+  };
+  const attackerToken = {
+    name: "Runner",
+    actor: { id: "runner" },
+    document: { id: "runner-token" },
+  };
+  const targetToken = {
+    name: "Black ICE",
+    actor: { id: "blackice", type: "blackIce" },
+    document: { id: "blackice-token", actorId: "blackice" },
+  };
+
+  const [data] = await __test__.prepareAttackDeclarations(attackerToken, [targetToken], option, {
+    skipDefenderPrompt: true,
+  });
+
+  assert.equal(data.attackKind, "netrunning");
+  assert.equal(data.netAction, "program");
+  assert.equal(data.cyberdeckId, "deck-1");
+  assert.equal(data.programId, "sword");
+  assert.equal(data.programUuid, "Actor.runner.Item.sword");
+  assert.equal(data.damage, "2d6");
+  assert.equal(data.dvLabel, "Black ICE DEF");
+  assert.equal(data.distanceLabel, "-");
+  assert.equal(data.skipDefenderPrompt, true);
+});
+
+test("netrunning defense is trusted as an internal contested action", async () => {
+  __test__.knownAttackDeclarations.clear();
+  __test__.rememberAttackDeclaration({
+    ...declaration,
+    attackKind: "netrunning",
+    netAction: "zap",
+    cyberdeckId: "deck-1",
+    skipDefenderPrompt: true,
+  });
+
+  const result = await __test__.getTrustedSocketData({
+    attackId: "attack-1",
+    defenderAction: "net-defense",
+    evasionTotal: 17,
+  });
+
+  assert.equal(result.defenderAction, "net-defense");
+  assert.equal(result.attackKind, "netrunning");
+  assert.equal(result.cyberdeckId, "deck-1");
+  assert.equal(__test__.getDefenseLabel(result), "Netrunning Defense");
+});
+
+test("netrunning defense falls back to base d10 without Interface setup", () => {
+  const actorWithoutInterface = {
+    type: "character",
+    items: [],
+    itemTypes: { role: [] },
+    system: { roleInfo: {} },
+  };
+  const actorWithInterface = {
+    type: "character",
+    items: [{ id: "deck-1", type: "cyberdeck", system: { equipped: "equipped" } }],
+    itemTypes: { role: [{ id: "role-1", system: { mainRoleAbility: "Interface" } }] },
+    system: { roleInfo: { activeNetRole: "role-1" } },
+  };
+  const blackIce = {
+    type: "blackIce",
+    createStatRoll: () => ({}),
+  };
+
+  assert.equal(__test__.usesBaseNetrunningDefense(actorWithoutInterface), true);
+  assert.equal(__test__.usesBaseNetrunningDefense(actorWithInterface), false);
+  assert.equal(__test__.usesBaseNetrunningDefense(blackIce), false);
+  assert.deepEqual(__test__.getBaseNetrunningDefenseRollConfig(), {
+    rollType: "defense",
+    roleName: "Interface",
+    roleValue: 0,
+    rollTitle: "Netrunning Defense",
+    ability: "defense",
+  });
 });
 
 test("getNativeRollType uses the attacker's selected fire mode for attacks", () => {

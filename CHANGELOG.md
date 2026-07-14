@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.10
+
+- Added native netrunning attack support for Zap, attacker programs and Black ICE ATK.
+- Added opposed netrunning defense rolls using Black ICE DEF, demon Interface or netrunner Interface defense.
+- Allowed targets without Interface to still roll a native Interface defense card as a plain d10.
+- Used native Cyberpunk RED rollcards for netrunning attack, defense and damage rolls.
+- Added regression tests for netrunning attack options, declarations, socket validation and fallback defense behavior.
+
 ## v0.1.9
 
 - Added a public `game.cprCombatAutomatism` API for external macros/modules to prepare, declare and resolve attacks.

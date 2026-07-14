@@ -1,6 +1,6 @@
 # CPR Combat Automatism
 
-A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon attacks from a selected attacker token to the current target.
+A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon and netrunning attacks from a selected attacker token to the current target.
 
 ## Features
 
@@ -9,6 +9,8 @@ A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon attacks from 
 - Shows the attack weapon, damage, skill, range and DV before resolving.
 - Lets the defender choose between No evade and Evade in a popup.
 - Uses native Cyberpunk RED CORE rolls for attacks, Evasion and damage.
+- Supports native netrunning attacks for Zap, attacker programs and Black ICE ATK.
+- Resolves netrunning defenses with native Interface or Black ICE DEF rollcards.
 - Leaves damage application, armor, criticals and ablation to the native damage card.
 
 ## Installation
@@ -16,7 +18,7 @@ A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon attacks from 
 Use this manifest URL in Foundry:
 
 ```text
-https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.9/module.json
+https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.10/module.json
 ```
 
 ## Compatibility
@@ -45,9 +47,10 @@ Available methods:
 
 - `open()` opens the module attack dialog for the current token selection.
 - `getWeapons(actor)` returns the attacker's usable weapon items.
+- `getAttackOptions(actor)` returns usable weapon and netrunning attack options.
 - `prepareAttack({ attacker, targets, weapon })` builds attack declaration data without creating chat cards or resolving prompts.
 - `declareAttack({ attacker, targets, weapon, dispatchPrompts = true })` creates public attack declaration cards and, by default, starts the normal defender prompt or Suppressive Fire resolution flow.
-- `chooseDefense(declaration, defenderAction)` submits a defender choice. Supported actions are `"no-evade"`, `"evade"` and `"concentration"`.
+- `chooseDefense(declaration, defenderAction)` submits a defender choice. Supported actions are `"no-evade"`, `"evade"`, `"concentration"` and `"net-defense"`.
 - `resolveAttack(declaration, { defenderAction, defenseTotal, evasionTotal })` resolves one declaration through the module flow. Use `defenseTotal` or `evasionTotal` when an external caller has already rolled Evasion or Concentration.
 
 Example:
