@@ -9,6 +9,7 @@ const TEMPLATES = {
 };
 
 let CPRChatClass = null;
+let CPRInterfaceRollClass = null;
 const processedActions = new Set();
 const claimedPrompts = new Set();
 const shownPrompts = new Set();
@@ -32,7 +33,8 @@ const SOCKET_MESSAGE_TYPES = new Set([
 ]);
 const FIRE_MODE_ROLL_TYPES = new Set(["aimed", "autofire", "suppressive"]);
 const AIMED_LOCATIONS = new Set(["head", "heldItem", "leg"]);
-const CONTESTED_DEFENDER_ACTIONS = new Set(["evade", "concentration"]);
+const CONTESTED_DEFENDER_ACTIONS = new Set(["evade", "concentration", "net-defense"]);
+const NETRUNNING_ATTACKER_PROGRAM_CLASSES = new Set(["antipersonnelattacker", "antiprogramattacker"]);
 const SHOTGUN_DV_TABLES = {
   shell: "DV Shotgun (Shell)",
   slug: "DV Shotgun (Slug)",
@@ -80,6 +82,7 @@ Hooks.once("ready", async () => {
 
   try {
     CPRChatClass = (await import(`/systems/${SYSTEM_ID}/modules/chat/cpr-chat.js`)).default;
+    CPRInterfaceRollClass = (await import(`/systems/${SYSTEM_ID}/modules/rolls/cpr-rolls.js`)).CPRInterfaceRoll;
   } catch (error) {
     console.error(`${MODULE_ID} | Could not import Cyberpunk RED chat adapter`, error);
     ui.notifications.error("CPR Combat Automatism could not load the Cyberpunk RED native roll adapter. See console.");
@@ -98,6 +101,7 @@ function createPublicApi() {
     resolveAttack: resolveAttackApi,
     chooseDefense: chooseDefenseApi,
     getWeapons,
+    getAttackOptions,
   });
 }
 
@@ -173,6 +177,7 @@ function normalizeDefenderAction(action) {
   if (action === true || action === "evade") return "evade";
   if (action === false || action === "noEvade" || action === "no-evade") return "no-evade";
   if (action === "concentration" || action === "suppressive") return "concentration";
+  if (action === "net-defense" || action === "netDefense" || action === "netrunning") return "net-defense";
   return null;
 }
 
@@ -217,9 +222,9 @@ async function openAttackDialog() {
   if (!selection) return;
 
   const { attacker, targets } = selection;
-  const weapons = getWeapons(attacker.actor);
+  const weapons = getAttackOptions(attacker.actor);
   if (weapons.length === 0) {
-    ui.notifications.warn("The selected attacker has no weapons.");
+    ui.notifications.warn("The selected attacker has no available attacks.");
     return;
   }
 
@@ -305,6 +310,69 @@ function getWeapons(actor) {
   return weapons.length ? weapons : actor.system?.weapons?.available ?? [];
 }
 
+function getAttackOptions(actor) {
+  return [
+    ...getWeapons(actor),
+    ...getNetrunningAttackOptions(actor),
+  ];
+}
+
+function getNetrunningAttackOptions(actor) {
+  if (!actor) return [];
+  if (actor.type === "blackIce") {
+    return [{
+      id: `net-blackice-${actor.id}`,
+      name: `${actor.name} ATK`,
+      type: "netrunning",
+      netAction: "blackice",
+      actor,
+    }];
+  }
+
+  const options = [];
+  for (const cyberdeck of getCyberdecks(actor)) {
+    options.push({
+      id: `net-zap-${cyberdeck.id}`,
+      name: `Zap (${cyberdeck.name})`,
+      type: "netrunning",
+      netAction: "zap",
+      cyberdeck,
+    });
+
+    for (const program of getInstalledPrograms(cyberdeck)) {
+      if (!isNetrunningAttackerProgram(program)) continue;
+      options.push({
+        id: `net-program-${cyberdeck.id}-${program.id}`,
+        name: `${program.name} (${cyberdeck.name})`,
+        type: "netrunning",
+        netAction: "program",
+        cyberdeck,
+        program,
+      });
+    }
+  }
+  return options;
+}
+
+function getCyberdecks(actor) {
+  return getCollectionValues(actor?.items).filter((item) => item.type === "cyberdeck");
+}
+
+function getInstalledPrograms(cyberdeck) {
+  if (!cyberdeck) return [];
+  if (Array.isArray(cyberdeck.system?.installedPrograms)) return cyberdeck.system.installedPrograms;
+  if (typeof cyberdeck.getInstalledItems === "function") return cyberdeck.getInstalledItems("program");
+  return [];
+}
+
+function isNetrunningAttackerProgram(program) {
+  return program?.type === "program" && NETRUNNING_ATTACKER_PROGRAM_CLASSES.has(program.system?.class);
+}
+
+function isNetrunningAttack(option) {
+  return option?.type === "netrunning";
+}
+
 function findWeaponBySelection(weapons, selection) {
   const index = Number(selection);
   if (Number.isInteger(index) && index >= 0 && index < weapons.length) return weapons[index];
@@ -328,6 +396,8 @@ function formatTargetList(targets) {
 }
 
 async function buildWeaponView(weapon, attacker, target) {
+  if (isNetrunningAttack(weapon)) return buildNetrunningAttackView(weapon, attacker, target);
+
   const dv = await calculateDv(weapon, attacker, target);
   return {
     damage: getWeaponDamage(weapon),
@@ -338,6 +408,48 @@ async function buildWeaponView(weapon, attacker, target) {
     bandLabel: dv.bandLabel || "-",
     reason: dv.reason,
   };
+}
+
+function buildNetrunningAttackView(option, _attacker, target) {
+  const targetDefenseLabel = getNetrunningDefenseLabel(target?.actor);
+  return {
+    damage: getNetrunningDamageLabel(option, target?.actor),
+    skill: getNetrunningAttackSkillLabel(option),
+    tableName: "Netrunning opposed defense",
+    distance: null,
+    dv: null,
+    dvLabel: targetDefenseLabel,
+    bandLabel: "-",
+    distanceLabel: "-",
+    reason: "",
+  };
+}
+
+function getNetrunningAttackSkillLabel(option) {
+  if (option?.netAction === "blackice") return "ATK";
+  if (option?.netAction === "program") return "Interface + ATK";
+  return "Interface";
+}
+
+function getNetrunningDefenseLabel(actor) {
+  if (actor?.type === "blackIce") return "Black ICE DEF";
+  if (actor?.type === "demon") return "Interface";
+  return "Interface Defense";
+}
+
+function getNetrunningDamageLabel(option, targetActor = null) {
+  if (option?.netAction === "zap") return "1d6";
+  if (option?.netAction === "blackice") return "Program damage";
+  const damage = getProgramDamageFormula(option?.program, targetActor);
+  return damage || "-";
+}
+
+function getProgramDamageFormula(program, targetActor = null) {
+  if (!program) return "";
+  if (targetActor?.type === "blackIce") {
+    return program.system?.damage?.blackIce || program.system?.damage?.standard || "";
+  }
+  return program.system?.damage?.standard || program.system?.damage?.blackIce || "";
 }
 
 async function buildDialogWeaponView(weapon, attacker, targets) {
@@ -362,19 +474,23 @@ async function createAttackCards(attacker, targets, weapon, { dispatchPrompts = 
   }
 
   const isSuppressive = isSuppressiveFire(attacker.actor, weapon);
+  const isNetAttack = isNetrunningAttack(weapon);
   const attacks = [];
   const declarations = await prepareAttackDeclarations(attacker, targets, weapon, {
-    skipDefenderPrompt: isSuppressive,
+    skipDefenderPrompt: isSuppressive || isNetAttack,
   });
 
   for (const data of declarations) {
     await createAttackDeclarationMessage(attacker, data);
     if (data) attacks.push(data);
-    if (dispatchPrompts && !isSuppressive) await dispatchDefenderPrompt(data);
+    if (dispatchPrompts && !isSuppressive && !isNetAttack) await dispatchDefenderPrompt(data);
   }
 
   if (dispatchPrompts && isSuppressive) {
     await startSuppressiveFireResolution(attacks);
+  }
+  if (dispatchPrompts && isNetAttack) {
+    await startNetrunningAttackResolution(attacks);
   }
   return attacks;
 }
@@ -398,7 +514,7 @@ async function prepareAttackDeclarations(attacker, targets, weapon, { skipDefend
 
 async function buildAttackDeclaration(attacker, target, weapon, group, { skipDefenderPrompt = false } = {}) {
   const view = await buildWeaponView(weapon, attacker, target);
-  if (!view.dv) {
+  if (!view.dv && !isNetrunningAttack(weapon)) {
     ui.notifications.warn(view.reason || "Could not calculate DV for this weapon.");
   }
 
@@ -421,12 +537,17 @@ async function buildAttackDeclaration(attacker, target, weapon, group, { skipDef
     weaponId: getItemId(weapon),
     weaponName: weapon.name,
     weaponTypeLabel: getWeaponTypeLabel(weapon),
+    attackKind: isNetrunningAttack(weapon) ? "netrunning" : "weapon",
+    netAction: weapon.netAction ?? "",
+    cyberdeckId: weapon.cyberdeck?.id ?? "",
+    programId: weapon.program?.id ?? "",
+    programUuid: weapon.program?.uuid ?? "",
     damage: view.damage,
     skill: view.skill,
     distance: view.distance,
-    distanceLabel: formatDistance(view.distance),
+    distanceLabel: view.distanceLabel ?? formatDistance(view.distance),
     dv: view.dv ?? "",
-    dvLabel: view.dv ?? "-",
+    dvLabel: view.dvLabel ?? view.dv ?? "-",
     tableName: view.tableName,
     bandLabel: view.bandLabel,
     reason: view.reason,
@@ -465,6 +586,25 @@ async function startSuppressiveFireResolution(attacks) {
 
   for (const attack of attacks) {
     entry.choices.set(attack.attackId, { ...attack, defenderAction: "concentration" });
+  }
+  pendingAttackGroups.set(groupId, entry);
+  resolvingAttackGroups.add(groupId);
+
+  await collectGroupEvasionsOrResolve(groupId, entry);
+}
+
+async function startNetrunningAttackResolution(attacks) {
+  if (attacks.length === 0) return;
+
+  const groupId = attacks[0].groupAttackId ?? attacks[0].attackId;
+  const entry = {
+    expected: attacks.length,
+    choices: new Map(),
+    evasions: new Map(),
+  };
+
+  for (const attack of attacks) {
+    entry.choices.set(attack.attackId, { ...attack, defenderAction: "net-defense" });
   }
   pendingAttackGroups.set(groupId, entry);
   resolvingAttackGroups.add(groupId);
@@ -522,6 +662,10 @@ function claimPrompt(attackId) {
 
 function shouldSkipDefenderPrompt(data) {
   return Boolean(data?.skipDefenderPrompt);
+}
+
+function isNetrunningDeclaration(data) {
+  return data?.attackKind === "netrunning";
 }
 
 async function dispatchDefenderPrompt(data) {
@@ -685,8 +829,8 @@ async function resolveAttackGroup(groupId, entry) {
     const context = await getRollContext(choices[0]);
     if (!context) return;
 
-    markNativeResultSuppressions(choices, context.actor?.name);
-    const attackRoll = await rollNative(context.actor, context.weapon, "attack");
+    if (!isNetrunningDeclaration(choices[0])) markNativeResultSuppressions(choices, context.actor?.name);
+    const attackRoll = await rollAttackForData(context, choices[0]);
     if (!attackRoll) return;
 
     const hits = [];
@@ -720,11 +864,7 @@ async function resolveAttackGroup(groupId, entry) {
 
     if (hits.length === 0 || entry.skipDamage) return;
 
-    await rollNative(context.actor, context.weapon, "damage", {
-      tokens: await getDamageTokensForHits(hits),
-      autofireMultiplier: getHighestAutofireMultiplier(hits),
-      aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
-    });
+    await rollDamageForHits(context, hits, attackRoll);
   } finally {
     pendingAttackGroups.delete(groupId);
     resolvingAttackGroups.delete(groupId);
@@ -802,8 +942,8 @@ function pickAttackResolver(data) {
 async function resolveNoEvade(data) {
   const context = await getRollContext(data);
   if (!context) return;
-  markNativeResultSuppressions([data], context.actor?.name);
-  const attackRoll = await rollNative(context.actor, context.weapon, "attack");
+  if (!isNetrunningDeclaration(data)) markNativeResultSuppressions([data], context.actor?.name);
+  const attackRoll = await rollAttackForData(context, data);
   if (!attackRoll) return;
 
   const dv = Number(data.dv);
@@ -816,11 +956,10 @@ async function resolveNoEvade(data) {
   const hit = attackRoll.resultTotal >= dv;
   await simpleMessage(formatAttackOutcomeMessage(context.actor, data.targetName, attackRoll.resultTotal, comparison, hit), { outcome: hit });
   if (hit) {
-    await rollNative(context.actor, context.weapon, "damage", {
-      tokens: await getDamageTokensForHits([data]),
+    await rollDamageForHits(context, [{
+      ...data,
       autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, dv),
-      aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
-    });
+    }], attackRoll);
   }
 }
 
@@ -847,6 +986,11 @@ async function rollDefenseForData(data) {
     return null;
   }
 
+  if (data.defenderAction === "net-defense") {
+    const defenseRoll = await rollNetrunningDefense(actor, defender, data);
+    return defenseRoll?.resultTotal ?? null;
+  }
+
   const defenseSkill = findDefenseSkill(actor, data);
   if (!defenseSkill) {
     ui.notifications.warn(`${actor.name} has no ${defenseLabel} skill item.`);
@@ -857,12 +1001,81 @@ async function rollDefenseForData(data) {
   return defenseRoll?.resultTotal ?? null;
 }
 
+async function rollNetrunningDefense(actor, defender, data) {
+  if (actor.type === "blackIce") return rollProgramStat(actor, defender, "def");
+  if (actor.type === "demon" && typeof actor.createStatRoll === "function") {
+    return rollProgramStat(actor, defender, "interface");
+  }
+
+  const cyberdeck = findCyberdeckForNetrunningDefense(actor);
+  const netRoleItem = getActiveNetRoleItem(actor);
+  if (!cyberdeck || !netRoleItem) {
+    return rollBaseNetrunningDefense(actor);
+  }
+
+  const cprRoll = cyberdeck.createRoll("interfaceAbility", actor, {
+    cyberdeck,
+    cyberdeckId: cyberdeck.id,
+    interfaceAbility: "defense",
+    netRoleItem,
+  });
+  return finalizeNativeRoll(cprRoll, actor, cyberdeck, {
+    tokens: [],
+    itemId: cyberdeck.id,
+  });
+}
+
+async function rollBaseNetrunningDefense(actor) {
+  const cprRoll = createBaseNetrunningDefenseRoll();
+  if (!cprRoll) return null;
+  return finalizeNativeRoll(cprRoll, actor, null, {
+    tokens: [],
+    itemId: "",
+  });
+}
+
+function createBaseNetrunningDefenseRoll() {
+  if (!CPRInterfaceRollClass) {
+    ui.notifications.error("CPR Combat Automatism native roll adapter is not available.");
+    return null;
+  }
+  const config = getBaseNetrunningDefenseRollConfig();
+  const cprRoll = new CPRInterfaceRollClass(config.rollType, config.roleName, config.roleValue);
+  cprRoll.rollTitle = config.rollTitle;
+  cprRoll.ability = config.ability;
+  return cprRoll;
+}
+
+function getBaseNetrunningDefenseRollConfig() {
+  return {
+    rollType: "defense",
+    roleName: "Interface",
+    roleValue: 0,
+    rollTitle: "Netrunning Defense",
+    ability: "defense",
+  };
+}
+
+function usesBaseNetrunningDefense(actor) {
+  if (actor?.type === "blackIce") return false;
+  if (actor?.type === "demon" && typeof actor.createStatRoll === "function") return false;
+  return !findCyberdeckForNetrunningDefense(actor) || !getActiveNetRoleItem(actor);
+}
+
+async function rollProgramStat(actor, defender, statName) {
+  const cprRoll = actor.createStatRoll(statName);
+  return finalizeNativeRoll(cprRoll, actor, null, {
+    tokens: [],
+    itemId: defender?.document?.id ?? defender?.id ?? "",
+  });
+}
+
 async function resolveAgainstEvasion(data) {
   const defendedData = { ...data, defenderAction: data.defenderAction ?? "evade" };
   const context = await getRollContext(defendedData);
   if (!context) return;
-  markNativeResultSuppressions([defendedData], context.actor?.name);
-  const attackRoll = await rollNative(context.actor, context.weapon, "attack");
+  if (!isNetrunningDeclaration(defendedData)) markNativeResultSuppressions([defendedData], context.actor?.name);
+  const attackRoll = await rollAttackForData(context, defendedData);
   if (!attackRoll) return;
 
   const evasionTotal = Number(data.evasionTotal);
@@ -870,12 +1083,127 @@ async function resolveAgainstEvasion(data) {
   const hit = attackRoll.resultTotal > evasionTotal;
   await simpleMessage(formatAttackOutcomeMessage(context.actor, defendedData.targetName, attackRoll.resultTotal, comparison, hit), { outcome: hit });
   if (hit) {
-    await rollNative(context.actor, context.weapon, "damage", {
-      tokens: await getDamageTokensForHits([defendedData]),
+    await rollDamageForHits(context, [{
+      ...defendedData,
       autofireMultiplier: getAutofireHitMultiplier(context.actor, context.weapon, attackRoll.resultTotal, evasionTotal),
-      aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
+    }], attackRoll);
+  }
+}
+
+async function rollAttackForData(context, data) {
+  if (isNetrunningDeclaration(data)) return rollNetrunningAttack(context, data);
+  return rollNative(context.actor, context.weapon, "attack");
+}
+
+async function rollDamageForHits(context, hits, attackRoll) {
+  if (isNetrunningDeclaration(hits[0])) return rollNetrunningDamage(context, hits);
+  return rollNative(context.actor, context.weapon, "damage", {
+    tokens: await getDamageTokensForHits(hits),
+    autofireMultiplier: getHighestAutofireMultiplier(hits),
+    aimedLocation: getAimedDamageLocation(context.actor, context.weapon, attackRoll),
+  });
+}
+
+async function rollNetrunningAttack(context, data) {
+  const cprRoll = createNetrunningAttackRoll(context, data);
+  if (!cprRoll) return null;
+  return finalizeNativeRoll(cprRoll, context.actor, context.rollItem ?? context.weapon, {
+    tokens: [],
+    itemId: context.rollItem?.id ?? context.weapon?.id ?? data.weaponId,
+  });
+}
+
+function createNetrunningAttackRoll(context, data) {
+  if (data.netAction === "blackice") {
+    if (typeof context.actor?.createStatRoll !== "function") {
+      ui.notifications.warn("Black ICE attacker cannot create a native ATK roll.");
+      return null;
+    }
+    return context.actor.createStatRoll("atk");
+  }
+
+  if (!context.cyberdeck) {
+    ui.notifications.warn("Could not resolve cyberdeck for netrunning attack.");
+    return null;
+  }
+
+  const netRoleItem = getActiveNetRoleItem(context.actor);
+  if (!netRoleItem) {
+    ui.notifications.warn(`${context.actor.name} has no active Netrunner role configured.`);
+    return null;
+  }
+
+  if (data.netAction === "zap") {
+    return context.cyberdeck.createRoll("interfaceAbility", context.actor, {
+      cyberdeck: context.cyberdeck,
+      cyberdeckId: context.cyberdeck.id,
+      interfaceAbility: "zap",
+      netRoleItem,
     });
   }
+
+  return context.cyberdeck.createRoll("cyberdeckProgram", context.actor, {
+    cyberdeckId: context.cyberdeck.id,
+    programId: data.programId,
+    executionType: "atk",
+    netRoleItem,
+  });
+}
+
+async function rollNetrunningDamage(context, hits) {
+  const hit = hits[0];
+  const cprRoll = await createNetrunningDamageRoll(context, hit);
+  if (!cprRoll) return null;
+  return finalizeNativeRoll(cprRoll, context.actor, context.rollItem ?? context.weapon, {
+    tokens: await getDamageTokensForHits(hits),
+    itemId: context.rollItem?.id ?? context.weapon?.id ?? hit.weaponId,
+  });
+}
+
+async function createNetrunningDamageRoll(context, hit) {
+  if (hit.netAction === "blackice") {
+    if (typeof context.actor?.createDamageRoll !== "function") {
+      ui.notifications.warn("Black ICE attacker cannot create a native damage roll.");
+      return null;
+    }
+    const flags = getSystemFlags(context.token?.document ?? context.token ?? context.actor?.token);
+    return context.actor.createDamageRoll(flags.programUUID, flags.netrunnerTokenId, flags.sceneId);
+  }
+
+  if (hit.netAction === "program" && await shouldUseBlackIceDamageRoll(hit)) {
+    const target = await resolveToken(hit.targetSceneId, hit.targetTokenId, hit.targetActorId);
+    if (typeof target?.actor?.createDamageRoll === "function") {
+      return target.actor.createDamageRoll(hit.programUuid || context.program?.uuid, hit.attackerTokenId, hit.attackerSceneId);
+    }
+  }
+
+  const netRoleItem = getActiveNetRoleItem(context.actor);
+  if (!context.cyberdeck || !netRoleItem) {
+    ui.notifications.warn("Could not resolve native netrunning damage roll data.");
+    return null;
+  }
+
+  if (hit.netAction === "zap") {
+    return context.cyberdeck.createRoll("interfaceAbility", context.actor, {
+      cyberdeckId: context.cyberdeck.id,
+      interfaceAbility: "zap",
+      programId: "zap",
+      executionType: "damage",
+      netRoleItem,
+    });
+  }
+
+  return context.cyberdeck.createRoll("cyberdeckProgram", context.actor, {
+    cyberdeckId: context.cyberdeck.id,
+    programId: hit.programId,
+    executionType: "damage",
+    netRoleItem,
+  });
+}
+
+async function shouldUseBlackIceDamageRoll(hit) {
+  const target = await resolveToken(hit.targetSceneId, hit.targetTokenId, hit.targetActorId);
+  return target?.actor?.type === "blackIce";
 }
 
 async function rollNative(actor, item, rollType, { tokens = [], autofireMultiplier = null, aimedLocation = null } = {}) {
@@ -901,15 +1229,37 @@ async function rollNative(actor, item, rollType, { tokens = [], autofireMultipli
   if (!keepRolling) return null;
 
   cprRoll = await item.confirmRoll(cprRoll);
-  await cprRoll.roll();
-  cprRoll.entityData = ChatMessage.getSpeaker({ actor });
-  cprRoll.entityData.item = item.id;
-  cprRoll.entityData.tokens = rollType === "damage" ? tokens : [];
-  await CPRChatClass.RenderRollCard(cprRoll);
+  await renderFinalizedNativeRoll(cprRoll, actor, {
+    itemId: item.id,
+    tokens: rollType === "damage" ? tokens : [],
+  });
   if (nativeRollType === "aimed" && cprRoll.location) {
     await actor.setFlag(game.system.id, "aimedLocation", cprRoll.location);
   }
   return cprRoll;
+}
+
+async function finalizeNativeRoll(cprRoll, actor, item = null, { tokens = [], itemId = null } = {}) {
+  if (!cprRoll) return null;
+  const keepRolling = await cprRoll.handleRollDialog({ ctrlKey: false, type: MODULE_ID }, actor, item);
+  if (!keepRolling) return null;
+
+  const confirmedRoll = typeof item?.confirmRoll === "function"
+    ? await item.confirmRoll(cprRoll)
+    : cprRoll;
+  await renderFinalizedNativeRoll(confirmedRoll, actor, {
+    itemId: itemId ?? item?.id ?? "",
+    tokens,
+  });
+  return confirmedRoll;
+}
+
+async function renderFinalizedNativeRoll(cprRoll, actor, { itemId = "", tokens = [] } = {}) {
+  await cprRoll.roll();
+  cprRoll.entityData = ChatMessage.getSpeaker({ actor });
+  cprRoll.entityData.item = itemId;
+  cprRoll.entityData.tokens = tokens;
+  await CPRChatClass.RenderRollCard(cprRoll);
 }
 
 function getNativeRollType(actor, item, rollType) {
@@ -1023,12 +1373,50 @@ function normalizeDamageToken(resolved) {
 async function getRollContext(data) {
   const token = await resolveToken(data.attackerSceneId, data.attackerTokenId, data.attackerActorId);
   const actor = token?.actor ?? getActorById(data.attackerActorId);
-  const weapon = actor?.items?.get(data.weaponId);
+  if (isNetrunningDeclaration(data)) return getNetrunningRollContext(data, actor, token);
+
+  const weapon = getOwnedItem(actor, data.weaponId);
   if (!actor || !weapon) {
     ui.notifications.warn("Could not resolve attacker or weapon for CPR Combat Automatism.");
     return null;
   }
   return { actor, weapon, token };
+}
+
+function getNetrunningRollContext(data, actor, token) {
+  if (!actor) {
+    ui.notifications.warn("Could not resolve netrunning attacker for CPR Combat Automatism.");
+    return null;
+  }
+
+  if (data.netAction === "blackice") {
+    return { actor, weapon: null, rollItem: null, token };
+  }
+
+  const cyberdeck = getOwnedItem(actor, data.cyberdeckId) ?? findCyberdeckForNetrunningDefense(actor);
+  const program = data.programId ? getNetrunningProgramById(actor, cyberdeck, data.programId) : null;
+  if (!cyberdeck) {
+    ui.notifications.warn("Could not resolve cyberdeck for CPR Combat Automatism.");
+    return null;
+  }
+  if (data.netAction === "program" && !program) {
+    ui.notifications.warn("Could not resolve netrunning program for CPR Combat Automatism.");
+    return null;
+  }
+  return {
+    actor,
+    weapon: program ?? cyberdeck,
+    rollItem: cyberdeck,
+    cyberdeck,
+    program,
+    token,
+  };
+}
+
+function getNetrunningProgramById(actor, cyberdeck, programId) {
+  return getOwnedItem(actor, programId)
+    ?? getInstalledPrograms(cyberdeck).find((program) => [program.id, program._id, program.uuid].includes(programId))
+    ?? null;
 }
 
 async function resolveToken(sceneId, tokenId, actorId) {
@@ -1045,6 +1433,32 @@ async function resolveToken(sceneId, tokenId, actorId) {
 
 function getActorById(actorId) {
   return game.actors.get(actorId) ?? Object.values(game.actors.tokens ?? {}).find((actor) => actor.id === actorId);
+}
+
+function getOwnedItem(actor, itemId) {
+  if (!actor || !itemId) return null;
+  return actor.getOwnedItem?.(itemId)
+    ?? actor.items?.get?.(itemId)
+    ?? getCollectionValues(actor.items).find((item) => [item.id, item._id, item.uuid].includes(itemId))
+    ?? null;
+}
+
+function getActiveNetRoleItem(actor) {
+  const activeRoleId = actor?.system?.roleInfo?.activeNetRole;
+  const roles = actor?.itemTypes?.role ?? getCollectionValues(actor?.items).filter((item) => item.type === "role");
+  return roles.find((role) => role.id === activeRoleId || role._id === activeRoleId)
+    ?? roles.find((role) => role.system?.mainRoleAbility?.toLocaleLowerCase?.() === "interface")
+    ?? null;
+}
+
+function findCyberdeckForNetrunningDefense(actor) {
+  return getCyberdecks(actor).find((cyberdeck) => cyberdeck.system?.equipped !== "carried")
+    ?? getCyberdecks(actor)[0]
+    ?? null;
+}
+
+function getSystemFlags(document) {
+  return document?.flags?.[game.system.id] ?? document?.getFlag?.(game.system.id) ?? {};
 }
 
 function getDefenderOwnershipDocs(data, defender) {
@@ -1116,6 +1530,7 @@ function getDefenseSkillNames(data) {
 }
 
 function getDefenseLabel(data) {
+  if (data?.defenderAction === "net-defense") return "Netrunning Defense";
   return data?.defenderAction === "concentration" ? "Concentration" : "Evasion";
 }
 
@@ -1363,6 +1778,11 @@ function getWeaponDamage(weapon) {
 }
 
 function getWeaponTypeLabel(weapon) {
+  if (isNetrunningAttack(weapon)) {
+    if (weapon.netAction === "zap") return "Zap";
+    if (weapon.netAction === "blackice") return "Black ICE";
+    return "Netrunning Program";
+  }
   const weaponType = weapon?.system?.weaponType;
   if (!weaponType) return weapon?.name ?? "-";
   return WEAPON_TYPE_LABELS[weaponType] ?? formatCamelCase(weaponType);
@@ -1618,7 +2038,7 @@ async function getTrustedSocketData(data) {
     resolverUserId: data.resolverUserId,
   };
 
-  if (trusted.defenderAction && !["evade", "no-evade", "concentration"].includes(trusted.defenderAction)) return null;
+  if (trusted.defenderAction && !["evade", "no-evade", "concentration", "net-defense"].includes(trusted.defenderAction)) return null;
   return trusted;
 }
 
@@ -1666,8 +2086,17 @@ export const __test__ = {
   getOutcomeMessageStyle,
   getNativeResultSuppressionKey,
   getCollectionValues,
+  getCyberdecks,
   getHighestAutofireMultiplier,
+  getInstalledPrograms,
+  getNetrunningAttackOptions,
+  getNetrunningDamageLabel,
+  getNetrunningAttackSkillLabel,
+  getBaseNetrunningDefenseRollConfig,
   hasDiwakoResultTraits,
+  isNetrunningAttack,
+  isNetrunningAttackerProgram,
+  isNetrunningDeclaration,
   isDiwakoCpredAdditionsActive,
   isSuppressibleDiwakoResultContent,
   isSuppressibleNativeResultText,
@@ -1688,7 +2117,9 @@ export const __test__ = {
   normalizePublicAttackRequest,
   normalizeTargetList,
   prepareAttackDeclarations,
+  getProgramDamageFormula,
   shouldSkipDefenderPrompt,
+  usesBaseNetrunningDefense,
   getTrustedSocketData,
   rememberAttackDeclaration,
   validateSocketMessage,
