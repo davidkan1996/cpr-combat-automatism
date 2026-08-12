@@ -103,6 +103,40 @@ test("getActorById tolerates missing synthetic token actor map", () => {
   assert.equal(__test__.getActorById("missing"), undefined);
 });
 
+test("chat styling keeps combat skills separate from neutral skills", () => {
+  assert.equal(__test__.isCombatSkillTitle("Heavy Weapons"), true);
+  assert.equal(__test__.isCombatSkillTitle("Armas Pesadas"), true);
+  assert.equal(__test__.isCombatSkillTitle("Brawling"), true);
+  assert.equal(__test__.isCombatSkillTitle("Artes Marciales: Karate"), true);
+  assert.equal(__test__.isCombatSkillTitle("Stealth"), false);
+  assert.equal(__test__.isCombatSkillTitle("Dance"), false);
+});
+
+test("Dice Uplink trackers inherit the requested roll category", () => {
+  const trackerFor = (roll) => ({
+    rollLabel: roll.label,
+    rows: [{ request: { roll } }],
+  });
+
+  assert.equal(__test__.isCombatUplinkTracker(trackerFor({
+    kind: "skill-roll",
+    category: "skills",
+    skillName: "Heavy Weapons",
+    label: "Heavy Weapons",
+  })), true);
+  assert.equal(__test__.isCombatUplinkTracker(trackerFor({
+    kind: "combat-roll",
+    category: "combat",
+    label: "Death Save",
+  })), true);
+  assert.equal(__test__.isCombatUplinkTracker(trackerFor({
+    kind: "skill-roll",
+    category: "skills",
+    skillName: "Stealth",
+    label: "Stealth",
+  })), false);
+});
+
 test("public API exposes attack preparation and resolution methods", () => {
   const api = __test__.createPublicApi();
 
@@ -234,6 +268,184 @@ test("netrunning declarations carry cyberdeck and program data without DV", asyn
   assert.equal(data.dvLabel, "Black ICE DEF");
   assert.equal(data.distanceLabel, "-");
   assert.equal(data.skipDefenderPrompt, true);
+});
+
+test("anti-program attacks expose rezzed programs from netrunner targets", async () => {
+  const targetProgram = {
+    id: "armor",
+    uuid: "Actor.target.Item.armor",
+    type: "program",
+    name: "Armor",
+    system: { class: "defender", isRezzed: true, def: 4 },
+  };
+  const cyberdeck = {
+    id: "target-deck",
+    type: "cyberdeck",
+    name: "Target Deck",
+    system: { rezzedPrograms: [targetProgram] },
+  };
+  const targetActor = {
+    id: "target-runner",
+    type: "character",
+    items: [cyberdeck],
+  };
+  const target = {
+    name: "Target Runner",
+    actor: targetActor,
+    document: { id: "target-runner-token", actorId: targetActor.id },
+  };
+  const attackingProgram = {
+    id: "sword",
+    type: "program",
+    name: "Sword",
+    system: { class: "antiprogramattacker", damage: { standard: "3d6", blackIce: "2d6" } },
+  };
+  const attack = {
+    id: "net-program-source-deck-sword",
+    name: "Sword (Source Deck)",
+    type: "netrunning",
+    netAction: "program",
+    cyberdeck: { id: "source-deck", type: "cyberdeck", name: "Source Deck" },
+    program: attackingProgram,
+  };
+  const attacker = {
+    name: "Runner",
+    actor: { id: "runner" },
+    document: { id: "runner-token" },
+  };
+
+  assert.equal(__test__.isAntiProgramAttack(attacker.actor, attack), true);
+  assert.deepEqual(
+    __test__.getProgramTargetPromptData([target])[0].programs,
+    [{ value: "armor", label: "Armor (Target Deck)", selected: true }],
+  );
+
+  const [data] = await __test__.prepareAttackDeclarations(attacker, [target], attack, {
+    skipDefenderPrompt: true,
+    targetPrograms: new Map([["target-runner-token", "armor"]]),
+  });
+
+  assert.equal(data.targetProgramId, "armor");
+  assert.equal(data.targetProgramName, "Armor");
+  assert.equal(data.targetProgramClass, "defender");
+  assert.equal(data.targetCyberdeckId, "target-deck");
+  assert.equal(data.targetDisplayName, "Target Runner: Armor");
+  assert.equal(data.dvLabel, "Armor DEF");
+  assert.equal(
+    __test__.needsProgramTargetPrompt(attacker, [target], attack, new Map()),
+    true,
+  );
+  assert.equal(
+    __test__.needsProgramTargetPrompt(
+      attacker,
+      [target],
+      attack,
+      new Map([["target-runner-token", "armor"]]),
+    ),
+    false,
+  );
+});
+
+test("rezzed programs are resolved from the cyberdeck installed item ids", () => {
+  const targetProgram = {
+    id: "shield",
+    type: "program",
+    name: "Shield",
+    system: { class: "defender", isRezzed: true, def: 2 },
+  };
+  const unrezzedProgram = {
+    id: "sword",
+    type: "program",
+    name: "Sword",
+    system: { class: "antiprogramattacker", isRezzed: false, def: 0 },
+  };
+  const cyberdeck = {
+    id: "target-deck",
+    type: "cyberdeck",
+    name: "Target Deck",
+    system: {
+      installedItems: {
+        list: new Set(["shield", "sword"]),
+      },
+    },
+  };
+  const items = new Map([
+    [cyberdeck.id, cyberdeck],
+    [targetProgram.id, targetProgram],
+    [unrezzedProgram.id, unrezzedProgram],
+  ]);
+  const targetActor = {
+    id: "target-runner",
+    type: "character",
+    items,
+    itemTypes: {
+      cyberdeck: new Set([cyberdeck]),
+    },
+  };
+
+  assert.deepEqual(
+    __test__.getRezzedProgramOptions(targetActor).map((entry) => entry.name),
+    ["Shield"],
+  );
+});
+
+test("program damage rows bypass native token damage applications", () => {
+  const rows = __test__.createDamageRows([
+    {
+      targetName: "Runner",
+      targetDisplayName: "Runner: Armor",
+      targetSceneId: "scene",
+      targetTokenId: "runner-token",
+      targetActorId: "runner",
+      targetProgramId: "armor",
+      targetCyberdeckId: "deck",
+    },
+    {
+      targetName: "Black ICE",
+      targetSceneId: "scene",
+      targetTokenId: "black-ice-token",
+      targetActorId: "black-ice",
+    },
+  ], 9);
+
+  assert.deepEqual(rows, [
+    {
+      targetName: "Runner: Armor",
+      damage: 9,
+      programDamage: true,
+      targetSceneId: "scene",
+      targetTokenId: "runner-token",
+      targetActorId: "runner",
+      targetProgramId: "armor",
+      targetCyberdeckId: "deck",
+    },
+    {
+      targetName: "Black ICE",
+      damage: 9,
+      programDamage: false,
+      targetSceneId: "scene",
+      targetTokenId: "black-ice-token",
+      targetActorId: "black-ice",
+      targetProgramId: "",
+      targetCyberdeckId: "",
+      nativeApplicationIndex: 0,
+    },
+  ]);
+});
+
+test("anti-program damage uses the Black ICE formula for a selected Black ICE program", () => {
+  const sword = {
+    system: {
+      damage: {
+        standard: "2d6",
+        blackIce: "3d6",
+      },
+    },
+  };
+
+  assert.equal(__test__.getProgramDamageFormula(sword, null, "defender"), "2d6");
+  assert.equal(__test__.getProgramDamageFormula(sword, null, "blackice"), "3d6");
+  assert.equal(__test__.getProgramDamageFormula(sword, { type: "blackIce" }), "3d6");
 });
 
 test("netrunning defense is trusted as an internal contested action", async () => {
@@ -646,6 +858,27 @@ test("roll details include every component used by native CPR skill totals", () 
     { label: "Range", value: -2 },
   ]);
   assert.equal(details.total, 18);
+});
+
+test("program defense roll details omit Interface when the native roll excludes it", () => {
+  const details = __test__.getRollDetails({
+    initialRoll: 7,
+    criticalRoll: 0,
+    resultTotal: 12,
+    roleName: "Interface",
+    roleValue: 8,
+    statName: "DEF",
+    statValue: 5,
+    includeInterface: false,
+    luck: 0,
+    mods: [],
+    additionalMods: [],
+    totalMods: () => 0,
+  });
+
+  assert.deepEqual(details.components.map(({ label, value }) => ({ label, value })), [
+    { label: "DEF", value: 5 },
+  ]);
 });
 
 test("native DV result suppression only matches Diwako attacker and target results", () => {

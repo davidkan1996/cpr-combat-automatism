@@ -2,6 +2,93 @@
   min-width: 360px;
 }
 
+/* Central chat palette. Unknown messages keep the system's original red theme. */
+.cpr-chat--neutral,
+.cpr-chat--netrunning {
+  --cpr-color-red: var(--cpr-chat-accent);
+  --cpr-background-border: var(--cpr-chat-accent);
+  --cpr-background-chat-card-block: var(--cpr-chat-accent);
+  --cpr-text-header-line: var(--cpr-chat-accent);
+  --cpr-text-header-arrow: var(--cpr-chat-accent);
+  --cpr-text-icon-highlight: var(--cpr-chat-accent);
+}
+
+.cpr-chat--neutral {
+  --cpr-chat-accent: #32d7e8;
+}
+
+.cpr-chat--netrunning {
+  --cpr-chat-accent: #e7bd35;
+}
+
+.chat-message.cpr-chat--neutral,
+.chat-message:has(.cpr-chat--neutral) {
+  border-color: #32d7e8 !important;
+}
+
+.chat-message.cpr-chat--netrunning,
+.chat-message:has(.cpr-chat--netrunning) {
+  border-color: #e7bd35 !important;
+}
+
+.cpr-block.cpr-chat--neutral,
+.cpr-chat--neutral .cpr-block {
+  background-color: #32d7e8 !important;
+}
+
+.cpr-block.cpr-chat--netrunning,
+.cpr-chat--netrunning .cpr-block {
+  background-color: #e7bd35 !important;
+}
+
+/* Haradan UI uses a high-specificity !important background shorthand on roll cards. */
+body.system-cyberpunk-red-core
+  #chat-log
+  .chat-message.cpr-chat--neutral
+  .message-content
+  > .rollcard.cpr-chat--neutral
+  .cpr-block.cpr-chat--neutral {
+  background: #32d7e8 !important;
+}
+
+body.system-cyberpunk-red-core
+  #chat-log
+  .chat-message.cpr-chat--netrunning
+  .message-content
+  > .rollcard.cpr-chat--netrunning
+  .cpr-block.cpr-chat--netrunning {
+  background: #e7bd35 !important;
+}
+
+.cpr-uplink-request.cpr-chat--neutral,
+.cpr-uplink-tracker.cpr-chat--neutral,
+.cpr-chat--neutral .cpr-uplink-request,
+.cpr-chat--neutral .cpr-uplink-tracker {
+  --uplink-red: #32d7e8 !important;
+  --uplink-border: #32d7e8 !important;
+  border-left-color: #32d7e8 !important;
+}
+
+body.system-cyberpunk-red-core
+  :is(.cpr-uplink-request, .cpr-uplink-tracker).cpr-chat--combat {
+  --uplink-red: var(--haradan-ui-red, #d94f55) !important;
+  --uplink-border: var(--haradan-ui-red-dim, #963740) !important;
+  border-color: var(--haradan-ui-red-dim, #963740) !important;
+  border-left-color: var(--haradan-ui-red, #d94f55) !important;
+}
+
+body.system-cyberpunk-red-core
+  .cpr-uplink-tracker.cpr-chat--combat
+  .cpr-uplink-tracker-row {
+  border-color: var(--haradan-ui-red-dim, #963740) !important;
+}
+
+.cpr-qh-card.cpr-chat--netrunning,
+.cpr-chat--netrunning .cpr-qh-card,
+.chat-message:has(.cpr-qh-card) .cpr-qh-card {
+  border-left-color: #e7bd35 !important;
+}
+
 .cpr-af-grid {
   display: grid;
   grid-template-columns: 88px 1fr;
@@ -12,6 +99,32 @@
 
 .cpr-af-grid select {
   width: 100%;
+}
+
+.cpr-af-program-targets {
+  margin-bottom: 12px;
+}
+
+.cpr-af-program-target {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 8px;
+}
+
+.cpr-af-program-target label small {
+  display: block;
+}
+
+.cpr-af-program-target select {
+  width: 100%;
+  min-width: 0;
+}
+
+.cpr-af-program-target .cpr-af-warning {
+  grid-column: 1 / -1;
+  margin-top: 0;
 }
 
 .cpr-af-summary {

@@ -16,20 +16,24 @@ A Foundry VTT v12 module for Cyberpunk RED CORE that guides weapon and netrunnin
 - Provides native per-target damage controls and a GM-only Apply to all action.
 - Supports native netrunning attacks for Zap, attacker programs and Black ICE ATK.
 - Resolves netrunning defenses with native Interface or Black ICE DEF rollcards.
-- Leaves damage application, armor, criticals and ablation to the native CPR damage handler.
+- Lets anti-program attacks select one of the target Netrunner's rezzed programs and roll that program's native DEF.
+- Applies anti-program damage to the selected program's REZ through the native cyberdeck helper.
+- Keeps combat chat cards red, styles non-combat skill and role rolls cyan, and styles netrunning rolls yellow.
+- Classifies compatible CPR Dice Uplink and CPR Quickhacks cards without requiring either optional module.
+- Leaves other damage application, armor, criticals and ablation to the native CPR damage handler.
 
 ## Installation
 
 Use this manifest URL in Foundry:
 
 ```text
-https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.11/module.json
+https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.12/module.json
 ```
 
 ## Compatibility
 
 - Foundry VTT v12 build 343
-- cyberpunk-red-core v0.92.4
+- cyberpunk-red-core v0.92.5
 
 ## Usage
 
@@ -56,7 +60,7 @@ Available methods:
 - `getWeapons(actor)` returns the attacker's usable weapon items.
 - `getAttackOptions(actor)` returns usable weapon and netrunning attack options.
 - `prepareAttack({ attacker, targets, weapon })` builds attack declaration data without creating chat cards or resolving prompts.
-- `declareAttack({ attacker, targets, weapon, dispatchPrompts = true })` creates public attack declaration cards and, by default, starts the normal defender prompt or Suppressive Fire resolution flow.
+- `declareAttack({ attacker, targets, weapon, dispatchPrompts = true })` creates public attack declaration cards and, by default, starts the normal defender prompt or Suppressive Fire resolution flow. When an anti-program weapon is already selected by an integration, it asks only for the target program.
 - `chooseDefense(declaration, defenderAction)` submits a defender choice. Supported actions are `"no-evade"`, `"evade"`, `"concentration"` and `"net-defense"`.
 - `resolveAttack(declaration, { defenderAction, defenseTotal, evasionTotal })` resolves one declaration through the module flow. Use `defenseTotal` or `evasionTotal` when an external caller has already rolled Evasion or Concentration.
 

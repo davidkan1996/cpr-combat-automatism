@@ -24,7 +24,7 @@
 
       <table class="cpr-af-results-table">
         <thead>
-          <tr><th>Token</th><th>DV</th><th>Evasión</th><th>Ataque</th></tr>
+          <tr><th>Token</th><th>DV</th><th>Defensa</th><th>Ataque</th></tr>
         </thead>
         <tbody>
           {{#each rows as |row|}}
@@ -76,7 +76,7 @@
         {{#each rows as |row|}}
           {{#if row.defenseDetails}}
             <div class="cpr-af-roll-detail cpr-af-roll-detail-collapsed" data-cpr-af-detail-panel="{{row.defenseDetailId}}" hidden>
-              <strong>Evasión de {{row.targetName}}</strong>
+              <strong>{{row.defenseLabel}} de {{row.targetName}}</strong>
               <div class="cpr-af-roll-detail-row">
                 <span>Dado</span><span class="cpr-af-roll-detail-value">{{row.defenseDetails.initialRoll}}</span>
               </div>
@@ -119,9 +119,26 @@
                   </button>
                 </td>
                 <td>
-                  <button type="button" class="cpr-af-result-button" data-cpr-af-apply-damage="{{@index}}" data-tooltip="Aplicar daño a {{row.targetName}}">
-                    <i class="fas fa-bolt"></i>
-                  </button>
+                  {{#if row.programDamage}}
+                    <button
+                      type="button"
+                      class="cpr-af-result-button"
+                      data-cpr-af-apply-program-damage
+                      data-cpr-af-target-scene-id="{{row.targetSceneId}}"
+                      data-cpr-af-target-token-id="{{row.targetTokenId}}"
+                      data-cpr-af-target-actor-id="{{row.targetActorId}}"
+                      data-cpr-af-target-program-id="{{row.targetProgramId}}"
+                      data-cpr-af-target-cyberdeck-id="{{row.targetCyberdeckId}}"
+                      data-cpr-af-program-damage="{{row.damage}}"
+                      data-tooltip="Aplicar daño a {{row.targetName}}"
+                    >
+                      <i class="fas fa-bolt"></i>
+                    </button>
+                  {{else}}
+                    <button type="button" class="cpr-af-result-button" data-cpr-af-apply-damage="{{row.nativeApplicationIndex}}" data-tooltip="Aplicar daño a {{row.targetName}}">
+                      <i class="fas fa-bolt"></i>
+                    </button>
+                  {{/if}}
                 </td>
               </tr>
             {{/each}}

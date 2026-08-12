@@ -4,6 +4,7 @@ const DIWAKO_CPRED_ADDITIONS_ID = "diwako-cpred-additions";
 const SOCKET = `module.${MODULE_ID}`;
 const TEMPLATES = {
   dialog: `modules/${MODULE_ID}/templates/attack-dialog.hbs`,
+  programTargetDialog: `modules/${MODULE_ID}/templates/program-target-dialog.hbs`,
   card: `modules/${MODULE_ID}/templates/attack-card.hbs`,
   declaration: `modules/${MODULE_ID}/templates/declaration-card.hbs`,
 };
@@ -35,6 +36,38 @@ const FIRE_MODE_ROLL_TYPES = new Set(["aimed", "autofire", "suppressive"]);
 const AIMED_LOCATIONS = new Set(["head", "heldItem", "leg"]);
 const CONTESTED_DEFENDER_ACTIONS = new Set(["evade", "concentration", "net-defense"]);
 const NETRUNNING_ATTACKER_PROGRAM_CLASSES = new Set(["antipersonnelattacker", "antiprogramattacker"]);
+const CHAT_STYLE_CLASSES = ["cpr-chat--combat", "cpr-chat--neutral", "cpr-chat--netrunning"];
+const COMBAT_SKILL_SLUGS = new Set([
+  "archery",
+  "arqueria",
+  "arma-cuerpo-a-cuerpo",
+  "armas-de-hombro",
+  "armas-pesadas",
+  "artes-marciales",
+  "autofire",
+  "brawling",
+  "disparo-automatico",
+  "evasion",
+  "handgun",
+  "heavy-weapons",
+  "martial-arts",
+  "melee-weapon",
+  "pelear",
+  "pistola-de-mano",
+  "shoulder-arms",
+]);
+const NETRUNNING_ROLL_TITLE_KEYS = [
+  "CPR.global.role.netrunner.ability.interface",
+  "CPR.global.role.netrunner.interfaceAbility.backdoor",
+  "CPR.global.role.netrunner.interfaceAbility.cloak",
+  "CPR.global.role.netrunner.interfaceAbility.control",
+  "CPR.global.role.netrunner.interfaceAbility.eyedee",
+  "CPR.global.role.netrunner.interfaceAbility.pathfinder",
+  "CPR.global.role.netrunner.interfaceAbility.scanner",
+  "CPR.global.role.netrunner.interfaceAbility.slide",
+  "CPR.global.role.netrunner.interfaceAbility.virus",
+  "CPR.global.role.netrunner.interfaceAbility.zap",
+];
 const SHOTGUN_DV_TABLES = {
   shell: "DV Shotgun (Shell)",
   slug: "DV Shotgun (Slug)",
@@ -108,14 +141,22 @@ function createPublicApi() {
 async function prepareAttackApi(input = {}) {
   const request = normalizePublicAttackRequest(input ?? {});
   if (!request) return [];
-  return prepareAttackDeclarations(request.attacker, request.targets, request.weapon);
+  return prepareAttackDeclarations(request.attacker, request.targets, request.weapon, {
+    targetPrograms: request.targetPrograms,
+  });
 }
 
 async function declareAttackApi(input = {}) {
   const request = normalizePublicAttackRequest(input ?? {});
   if (!request) return [];
+  let { targetPrograms } = request;
+  if (needsProgramTargetPrompt(request.attacker, request.targets, request.weapon, targetPrograms)) {
+    targetPrograms = await promptForTargetPrograms(request.attacker, request.targets, request.weapon);
+    if (targetPrograms === null) return [];
+  }
   return createAttackCards(request.attacker, request.targets, request.weapon, {
     dispatchPrompts: input?.dispatchPrompts !== false,
+    targetPrograms,
   });
 }
 
@@ -163,7 +204,12 @@ function normalizePublicAttackRequest(input = {}) {
     ui.notifications.warn("A public CPR Combat Automatism attack needs a weapon.");
     return null;
   }
-  return { attacker, targets, weapon };
+  return {
+    attacker,
+    targets,
+    weapon,
+    targetPrograms: normalizeTargetProgramSelections(input.targetPrograms),
+  };
 }
 
 function normalizeTargetList(targets) {
@@ -171,6 +217,24 @@ function normalizeTargetList(targets) {
   if (Array.isArray(targets)) return targets;
   if (typeof targets[Symbol.iterator] === "function") return Array.from(targets);
   return [targets];
+}
+
+function normalizeTargetProgramSelections(selections) {
+  if (!selections) return new Map();
+  if (selections instanceof Map) return new Map(selections);
+  if (Array.isArray(selections)) return new Map(selections);
+  if (typeof selections === "object") return new Map(Object.entries(selections));
+  return new Map();
+}
+
+function needsProgramTargetPrompt(attacker, targets, weapon, targetPrograms) {
+  if (!isAntiProgramAttack(attacker?.actor, weapon)) return false;
+  const selections = normalizeTargetProgramSelections(targetPrograms);
+  return targets.some((target) => {
+    if (!isNetrunnerActor(target.actor)) return false;
+    const selection = selections.get(target.document.id) ?? selections.get(target.actor.id);
+    return !findRezzedProgramOption(target.actor, selection);
+  });
 }
 
 function normalizeDefenderAction(action) {
@@ -221,7 +285,8 @@ Hooks.on("createChatMessage", async (message) => {
   }
 });
 
-Hooks.on("renderChatMessage", (_message, html) => {
+Hooks.on("renderChatMessage", (message, html) => {
+  applyChatMessageStyle(message, html);
   const root = html.find?.(".cpr-af-declaration")?.first?.();
   if (!root?.length) return;
   root.find("[data-cpr-af-roll-detail]").on("click", (event) => {
@@ -252,6 +317,11 @@ Hooks.on("renderChatMessage", (_message, html) => {
     });
   });
 
+  root.find("[data-cpr-af-apply-program-damage]").on("click", async (event) => {
+    event.preventDefault();
+    await applyProgramDamageFromElement(event.currentTarget);
+  });
+
   const applyAllButton = root.parent().find("[data-cpr-af-apply-all]");
   if (!game.user.isGM) {
     applyAllButton.remove();
@@ -265,10 +335,18 @@ Hooks.on("renderChatMessage", (_message, html) => {
     button.dataset.cprAfApplying = "true";
     button.classList.add("cpr-af-applying");
     try {
+      const programApplications = root
+        .find("[data-cpr-af-apply-program-damage]")
+        .toArray();
+      for (const application of programApplications) {
+        await applyProgramDamageFromElement(application);
+      }
+
       const applications = root.parent()
         .find(".cpr-af-native-damage-data [data-action='applyDamage'][data-scope='local']")
         .toArray();
       for (const application of applications) {
+        if (!CPRChatClass) break;
         await CPRChatClass.damageApplication({
           currentTarget: application,
           target: application,
@@ -282,6 +360,207 @@ Hooks.on("renderChatMessage", (_message, html) => {
   });
 });
 
+function applyChatMessageStyle(message, html) {
+  const category = classifyChatMessage(message, html);
+  if (!category) return;
+  const elements = new Set();
+  collectChatStyleElements(elements, html);
+  collectChatStyleElements(elements, html.closest?.(".chat-message"));
+  collectChatStyleElements(elements, html.find?.([
+    ".chat-message",
+    ".message-content",
+    ".rollcard",
+    ".cpr-block",
+    ".cpr-uplink-request",
+    ".cpr-uplink-tracker",
+    ".cpr-qh-card",
+  ].join(", ")));
+
+  for (const element of elements) {
+    element.classList.remove(...CHAT_STYLE_CLASSES);
+    element.classList.add(`cpr-chat--${category}`);
+    element.dataset.cprChatCategory = category;
+  }
+}
+
+function collectChatStyleElements(elements, source) {
+  if (!source) return;
+  if (source.nodeType === 1) elements.add(source);
+  if (typeof source.toArray === "function") {
+    for (const element of source.toArray()) {
+      if (element?.nodeType === 1) elements.add(element);
+    }
+    return;
+  }
+  const element = source[0];
+  if (element?.nodeType === 1) elements.add(element);
+}
+
+function classifyChatMessage(message, html) {
+  if (isNetrunningChatMessage(message, html)) return "netrunning";
+  if (isCombatChatMessage(message, html)) return "combat";
+  if (isNeutralChatMessage(message, html)) return "neutral";
+  return null;
+}
+
+function isNetrunningChatMessage(message, html) {
+  const declarations = message.getFlag?.(MODULE_ID, "attackDeclarations")
+    ?? [message.getFlag?.(MODULE_ID, "attackDeclaration")].filter(Boolean);
+  if (declarations.some((entry) => entry?.weapon?.netAction || entry?.netAction)) return true;
+  if (hasChatElement(html, [
+    ".cpr-qh-card",
+    "[data-program-id]",
+    "[data-cpr-af-apply-program-damage]",
+  ])) return true;
+  if (hasChatElement(html, [".rollcard-subtitle-2-center"])
+    && !hasChatElement(html, ["[data-action='rollDamage']"])) return true;
+  const rollTitle = getNativeRollTitle(html);
+  return Boolean(rollTitle) && getLocalizedSlugs(NETRUNNING_ROLL_TITLE_KEYS)
+    .has(slugifyChatLabel(rollTitle));
+}
+
+function isCombatChatMessage(message, html) {
+  if (isCombatUplinkTracker(message.getFlag?.("cpr-dice-uplink", "tracker"))) return true;
+  if (message.getFlag?.(MODULE_ID, "attackDeclaration")
+    || message.getFlag?.(MODULE_ID, "attackDeclarations")) return true;
+  if (hasChatElement(html, [
+    ".cpr-af-card",
+    ".cpr-af-declaration",
+    "[data-action='rollDamage']",
+    "[data-action='applyDamage']",
+  ])) return true;
+  const skillTitle = getNativeSkillTitle(html);
+  return skillTitle ? isCombatSkillTitle(skillTitle) : false;
+}
+
+function isNeutralChatMessage(message, html) {
+  if (message.getFlag?.("cpr-dice-uplink", "tracker")) return true;
+  if (hasChatElement(html, [".cpr-uplink-card", ".cpr-uplink-tracker"])) return true;
+  return Boolean(getNativeSkillTitle(html)) || hasLocalizedRollSubtitle(html, [
+    "CPR.global.itemTypes.skill",
+    "CPR.rolls.roleAbility",
+  ]);
+}
+
+function getNativeSkillTitle(html) {
+  if (!hasLocalizedRollSubtitle(html, ["CPR.global.itemTypes.skill"])) return "";
+  return getNativeRollTitle(html);
+}
+
+function getNativeRollTitle(html) {
+  return html.find?.(".rollcard .chat-rollTitle-stat > .text-normal")?.first?.().text?.().trim?.() ?? "";
+}
+
+function hasLocalizedRollSubtitle(html, keys) {
+  const labels = keys.map((key) => game.i18n.localize(key)).filter(Boolean);
+  return html.find?.(".rollcard .text-small")?.toArray?.()
+    ?.some((element) => labels.includes(element.textContent?.trim())) ?? false;
+}
+
+function hasChatElement(html, selectors) {
+  return selectors.some((selector) => Boolean(html.find?.(selector)?.length));
+}
+
+function slugifyChatLabel(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function getLocalizedSlugs(keys) {
+  return new Set(keys.flatMap((key) => {
+    const localized = game.i18n.localize(key);
+    return [key.split(".").at(-1), localized === key ? "" : localized]
+      .map(slugifyChatLabel)
+      .filter(Boolean);
+  }));
+}
+
+function isCombatSkillTitle(title) {
+  const slug = slugifyChatLabel(title);
+  return [...COMBAT_SKILL_SLUGS].some((combatSlug) => (
+    slug === combatSlug || slug.startsWith(`${combatSlug}-`)
+  ));
+}
+
+function isCombatUplinkTracker(tracker) {
+  if (!tracker) return false;
+  const descriptors = (tracker.rows ?? [])
+    .map((row) => row?.request?.roll)
+    .filter(Boolean);
+  if (descriptors.some((roll) => roll.category === "combat" || roll.kind === "combat-roll")) {
+    return true;
+  }
+  const requestedSkills = descriptors
+    .filter((roll) => roll.kind === "skill-roll" || roll.category === "skills")
+    .map((roll) => roll.skillName ?? roll.label);
+  if (requestedSkills.some(isCombatSkillTitle)) return true;
+  return descriptors.length === 0 && isCombatSkillTitle(tracker.rollLabel);
+}
+
+async function applyProgramDamageFromElement(element) {
+  if (!element || element.dataset.cprAfApplying === "true" || element.disabled) return false;
+  element.dataset.cprAfApplying = "true";
+  element.disabled = true;
+  try {
+    const applied = await applyProgramDamage({
+      targetSceneId: element.dataset.cprAfTargetSceneId,
+      targetTokenId: element.dataset.cprAfTargetTokenId,
+      targetActorId: element.dataset.cprAfTargetActorId,
+      targetProgramId: element.dataset.cprAfTargetProgramId,
+      targetCyberdeckId: element.dataset.cprAfTargetCyberdeckId,
+      damage: Number(element.dataset.cprAfProgramDamage),
+    });
+    if (!applied) element.disabled = false;
+    return applied;
+  } finally {
+    element.dataset.cprAfApplying = "false";
+  }
+}
+
+async function applyProgramDamage({
+  targetSceneId,
+  targetTokenId,
+  targetActorId,
+  targetProgramId,
+  targetCyberdeckId,
+  damage,
+}) {
+  const amount = Math.max(0, Math.floor(Number(damage)));
+  if (!Number.isFinite(amount)) return false;
+
+  const target = await resolveToken(targetSceneId, targetTokenId, targetActorId);
+  const actor = target?.actor ?? getActorById(targetActorId);
+  const cyberdeck = getOwnedItem(actor, targetCyberdeckId);
+  const program = getOwnedItem(actor, targetProgramId);
+  const installedIds = getInstalledItemIds(cyberdeck);
+  if (
+    !actor
+    || cyberdeck?.type !== "cyberdeck"
+    || program?.type !== "program"
+    || (installedIds.size > 0 && !installedIds.has(getItemId(program)))
+  ) {
+    ui.notifications.warn("No se pudo resolver el programa objetivo para aplicar el dano.");
+    return false;
+  }
+  if (typeof cyberdeck.reduceRezProgram !== "function") {
+    ui.notifications.warn("El cyberdeck objetivo no permite reducir el REZ del programa.");
+    return false;
+  }
+
+  try {
+    await cyberdeck.reduceRezProgram(program, amount);
+    return true;
+  } catch (error) {
+    console.error(`${MODULE_ID} | Could not apply program REZ damage`, error);
+    ui.notifications.warn("No se pudo aplicar el dano al programa objetivo.");
+    return false;
+  }
+}
+
 async function openAttackDialog() {
   const selection = getSelection();
   if (!selection) return;
@@ -294,6 +573,7 @@ async function openAttackDialog() {
   }
 
   const selected = await buildDialogWeaponView(weapons[0], attacker, targets);
+  const programTargets = getProgramTargetPromptData(targets);
   const content = await renderTemplate(TEMPLATES.dialog, {
     attackerName: attacker.name,
     targetName: formatTargetList(targets),
@@ -305,6 +585,8 @@ async function openAttackDialog() {
       selected: index === 0,
     })),
     selected,
+    programTargets,
+    showProgramTargets: isAntiProgramAttack(attacker.actor, weapons[0]),
     distanceLabel: selected.distanceLabel ?? formatDistance(selected.distance),
     dvLabel: selected.dvLabel ?? selected.dv ?? "-",
     reason: selected.reason,
@@ -318,7 +600,8 @@ async function openAttackDialog() {
         label: "Crear ataque",
         callback: async (html) => {
           const weapon = findWeaponBySelection(weapons, getSelectedWeaponId(html));
-          await createAttackCards(attacker, targets, weapon);
+          const targetPrograms = getSelectedTargetPrograms(html);
+          await createAttackCards(attacker, targets, weapon, { targetPrograms });
         },
       },
       cancel: {
@@ -328,6 +611,7 @@ async function openAttackDialog() {
     default: "create",
     render: (html) => {
       let weaponViewRequest = 0;
+      syncProgramTargetControls(html, attacker.actor, weapons[0], programTargets);
       html.find("[name='weaponId']").on("change", async (event) => {
         const request = ++weaponViewRequest;
         const weapon = findWeaponBySelection(weapons, event.currentTarget.value);
@@ -338,11 +622,55 @@ async function openAttackDialog() {
         html.find("[data-cpr-af-field='skill']").text(view.skill);
         html.find("[data-cpr-af-field='table']").text(view.tableName);
         html.find("[data-cpr-af-field='dv']").text(view.dvLabel ?? view.dv ?? "-");
+        syncProgramTargetControls(html, attacker.actor, weapon, programTargets);
       });
     },
   });
 
   dialog.render(true);
+}
+
+async function promptForTargetPrograms(attacker, targets, weapon) {
+  const programTargets = getProgramTargetPromptData(targets);
+  if (programTargets.length === 0) return new Map();
+
+  const content = await renderTemplate(TEMPLATES.programTargetDialog, {
+    attackerName: attacker.name,
+    attackName: weapon.program?.name ?? weapon.name,
+    programTargets,
+  });
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const dialog = new Dialog({
+      title: `${weapon.program?.name ?? weapon.name}: Programa objetivo`,
+      content,
+      buttons: {
+        create: {
+          label: "Crear ataque",
+          callback: (html) => finish(getSelectedTargetPrograms(html)),
+        },
+        cancel: {
+          label: "Cancelar",
+          callback: () => finish(null),
+        },
+      },
+      default: "create",
+      render: (html) => syncProgramTargetControls(
+        html,
+        attacker.actor,
+        weapon,
+        programTargets,
+      ),
+      close: () => finish(null),
+    });
+    dialog.render(true);
+  });
 }
 
 function getSelection() {
@@ -420,14 +748,120 @@ function getNetrunningAttackOptions(actor) {
 }
 
 function getCyberdecks(actor) {
+  const typedCyberdecks = getCollectionValues(actor?.itemTypes?.cyberdeck);
+  if (typedCyberdecks.length > 0) return typedCyberdecks;
   return getCollectionValues(actor?.items).filter((item) => item.type === "cyberdeck");
 }
 
-function getInstalledPrograms(cyberdeck) {
+function getActorPrograms(actor) {
+  const typedPrograms = getCollectionValues(actor?.itemTypes?.program);
+  if (typedPrograms.length > 0) return typedPrograms;
+  return getCollectionValues(actor?.items).filter((item) => item.type === "program");
+}
+
+function getInstalledItemIds(cyberdeck) {
+  return new Set(
+    getCollectionValues(cyberdeck?.system?.installedItems?.list)
+      .map((entry) => typeof entry === "string" ? entry : getItemId(entry))
+      .filter(Boolean),
+  );
+}
+
+function getInstalledPrograms(cyberdeck, actor = cyberdeck?.actor) {
   if (!cyberdeck) return [];
-  if (Array.isArray(cyberdeck.system?.installedPrograms)) return cyberdeck.system.installedPrograms;
-  if (typeof cyberdeck.getInstalledItems === "function") return cyberdeck.getInstalledItems("program");
-  return [];
+  const installedIds = getInstalledItemIds(cyberdeck);
+  if (installedIds.size > 0 && actor) {
+    const actorPrograms = getActorPrograms(actor)
+      .filter((program) => installedIds.has(getItemId(program)));
+    if (actorPrograms.length > 0) return actorPrograms;
+  }
+
+  const installedPrograms = getCollectionValues(cyberdeck.system?.installedPrograms);
+  if (installedPrograms.length > 0) return installedPrograms;
+
+  if (typeof cyberdeck.getInstalledItems === "function") {
+    const installedItems = getCollectionValues(cyberdeck.getInstalledItems("program"));
+    if (installedItems.length > 0) return installedItems;
+  }
+
+  return getCollectionValues(cyberdeck.system?.installedItems?.list)
+    .map((itemId) => getOwnedItem(actor, itemId))
+    .filter((item) => item?.type === "program");
+}
+
+function getRezzedPrograms(cyberdeck, actor = cyberdeck?.actor) {
+  if (!cyberdeck) return [];
+  const rezzedPrograms = getCollectionValues(cyberdeck.system?.rezzedPrograms);
+  if (rezzedPrograms.length > 0) return rezzedPrograms;
+  return getInstalledPrograms(cyberdeck, actor).filter((program) => program.system?.isRezzed === true);
+}
+
+function getRezzedProgramOptions(actor) {
+  const options = [];
+  const seen = new Set();
+  const actorPrograms = getActorPrograms(actor);
+  for (const cyberdeck of getCyberdecks(actor)) {
+    const installedIds = getInstalledItemIds(cyberdeck);
+    const programs = installedIds.size > 0
+      ? actorPrograms.filter((program) => installedIds.has(getItemId(program)))
+      : getRezzedPrograms(cyberdeck, actor);
+
+    for (const program of programs) {
+      const programId = getItemId(program);
+      if (!programId || seen.has(programId) || program.system?.isRezzed !== true) continue;
+      seen.add(programId);
+      options.push({
+        id: programId,
+        name: program.name,
+        uuid: program.uuid ?? "",
+        cyberdeckId: getItemId(cyberdeck),
+        cyberdeckName: cyberdeck.name,
+        program,
+        cyberdeck,
+      });
+    }
+  }
+  return options;
+}
+
+function isNetrunnerActor(actor) {
+  if (!actor || ["blackIce", "demon"].includes(actor.type)) return false;
+  if (getCyberdecks(actor).length > 0) return true;
+  const roles = actor.itemTypes?.role ?? getCollectionValues(actor.items).filter((item) => item.type === "role");
+  return roles.some((role) => role.system?.mainRoleAbility?.toLocaleLowerCase?.() === "interface");
+}
+
+function isAntiProgramAttack(actor, option) {
+  if (!isNetrunningAttack(option)) return false;
+  if (option.netAction === "blackice") return actor?.system?.class === "antiprogram";
+  return option.netAction === "program"
+    && option.program?.system?.class === "antiprogramattacker";
+}
+
+function getProgramTargetPromptData(targets) {
+  return targets
+    .filter((target) => isNetrunnerActor(target.actor))
+    .map((target) => {
+      const programs = getRezzedProgramOptions(target.actor);
+      return {
+        targetTokenId: target.document.id,
+        targetName: target.name,
+        hasPrograms: programs.length > 0,
+        programs: programs.map((entry, index) => ({
+          value: entry.id,
+          label: entry.cyberdeckName ? `${entry.name} (${entry.cyberdeckName})` : entry.name,
+          selected: index === 0,
+        })),
+      };
+    });
+}
+
+function findRezzedProgramOption(actor, selection) {
+  const selectedId = typeof selection === "object"
+    ? getItemId(selection.program ?? selection)
+    : String(selection ?? "");
+  return getRezzedProgramOptions(actor)
+    .find((entry) => [entry.id, entry.uuid].includes(selectedId)) ?? null;
 }
 
 function isNetrunningAttackerProgram(program) {
@@ -460,8 +894,10 @@ function formatTargetList(targets) {
   return targets.map((target) => target.name).join(", ");
 }
 
-async function buildWeaponView(weapon, attacker, target) {
-  if (isNetrunningAttack(weapon)) return buildNetrunningAttackView(weapon, attacker, target);
+async function buildWeaponView(weapon, attacker, target, { targetProgram = null } = {}) {
+  if (isNetrunningAttack(weapon)) {
+    return buildNetrunningAttackView(weapon, attacker, target, targetProgram);
+  }
 
   const dv = await calculateDv(weapon, attacker, target);
   return {
@@ -475,10 +911,14 @@ async function buildWeaponView(weapon, attacker, target) {
   };
 }
 
-function buildNetrunningAttackView(option, _attacker, target) {
-  const targetDefenseLabel = getNetrunningDefenseLabel(target?.actor);
+function buildNetrunningAttackView(option, _attacker, target, targetProgram = null) {
+  const targetDefenseLabel = getNetrunningDefenseLabel(target?.actor, targetProgram);
   return {
-    damage: getNetrunningDamageLabel(option, target?.actor),
+    damage: getNetrunningDamageLabel(
+      option,
+      target?.actor,
+      targetProgram?.program?.system?.class,
+    ),
     skill: getNetrunningAttackSkillLabel(option),
     tableName: "Netrunning opposed defense",
     distance: null,
@@ -492,6 +932,28 @@ function buildNetrunningAttackView(option, _attacker, target) {
 
 function getNetrunningAttackSkillLabel(option) {
   return option?.netAction === "blackice" ? "Atk" : "Interface";
+}
+
+function getSelectedTargetPrograms(html) {
+  const selections = new Map();
+  html.find("[data-cpr-af-target-program]").each((_index, element) => {
+    if (element.disabled || !element.value) return;
+    selections.set(element.dataset.cprAfTargetToken, element.value);
+  });
+  return selections;
+}
+
+function syncProgramTargetControls(html, actor, weapon, programTargets) {
+  const required = isAntiProgramAttack(actor, weapon);
+  const section = html.find("[data-cpr-af-program-targets]");
+  section.prop("hidden", !required);
+  section.find("[data-cpr-af-target-program]").each((_index, element) => {
+    const hasPrograms = element.dataset.cprAfHasPrograms === "true";
+    element.disabled = !required || !hasPrograms;
+  });
+
+  const missingProgram = required && programTargets.some((target) => !target.hasPrograms);
+  html.closest(".app").find("[data-button='create']").prop("disabled", missingProgram);
 }
 
 function getAttackActionLabel(actor, option) {
@@ -526,22 +988,23 @@ function localizeSystemLabel(key, fallback) {
   return localized && localized !== key ? localized : fallback;
 }
 
-function getNetrunningDefenseLabel(actor) {
+function getNetrunningDefenseLabel(actor, targetProgram = null) {
+  if (targetProgram?.name) return `${targetProgram.name} DEF`;
   if (actor?.type === "blackIce") return "Black ICE DEF";
   if (actor?.type === "demon") return "Interface";
   return "Interface Defense";
 }
 
-function getNetrunningDamageLabel(option, targetActor = null) {
+function getNetrunningDamageLabel(option, targetActor = null, targetProgramClass = "") {
   if (option?.netAction === "zap") return "1d6";
   if (option?.netAction === "blackice") return "Program damage";
-  const damage = getProgramDamageFormula(option?.program, targetActor);
+  const damage = getProgramDamageFormula(option?.program, targetActor, targetProgramClass);
   return damage || "-";
 }
 
-function getProgramDamageFormula(program, targetActor = null) {
+function getProgramDamageFormula(program, targetActor = null, targetProgramClass = "") {
   if (!program) return "";
-  if (targetActor?.type === "blackIce") {
+  if (targetActor?.type === "blackIce" || targetProgramClass === "blackice") {
     return program.system?.damage?.blackIce || program.system?.damage?.standard || "";
   }
   return program.system?.damage?.standard || program.system?.damage?.blackIce || "";
@@ -562,7 +1025,10 @@ async function buildDialogWeaponView(weapon, attacker, targets) {
   };
 }
 
-async function createAttackCards(attacker, targets, weapon, { dispatchPrompts = true } = {}) {
+async function createAttackCards(attacker, targets, weapon, {
+  dispatchPrompts = true,
+  targetPrograms = new Map(),
+} = {}) {
   if (!weapon) {
     ui.notifications.warn("Selected weapon was not found on the attacker.");
     return [];
@@ -573,7 +1039,9 @@ async function createAttackCards(attacker, targets, weapon, { dispatchPrompts = 
   const attacks = [];
   const declarations = await prepareAttackDeclarations(attacker, targets, weapon, {
     skipDefenderPrompt: isSuppressive || isNetAttack,
+    targetPrograms,
   });
+  if (declarations.length === 0) return [];
 
   const message = await createAttackDeclarationMessage(attacker, declarations);
   for (const data of declarations) {
@@ -596,25 +1064,45 @@ async function createAttackCards(attacker, targets, weapon, { dispatchPrompts = 
   return attacks;
 }
 
-async function prepareAttackDeclarations(attacker, targets, weapon, { skipDefenderPrompt = false } = {}) {
+async function prepareAttackDeclarations(attacker, targets, weapon, {
+  skipDefenderPrompt = false,
+  targetPrograms = new Map(),
+} = {}) {
   const groupAttackId = foundry.utils.randomID();
   const groupTargetIds = targets.map((target) => target.document.id);
   const declarations = [];
+  const selections = normalizeTargetProgramSelections(targetPrograms);
+  const requiresProgramTarget = isAntiProgramAttack(attacker.actor, weapon);
 
   for (const [index, target] of targets.entries()) {
+    let targetProgram = null;
+    if (requiresProgramTarget && isNetrunnerActor(target.actor)) {
+      targetProgram = findRezzedProgramOption(
+        target.actor,
+        selections.get(target.document.id) ?? selections.get(target.actor.id),
+      );
+      if (!targetProgram) {
+        ui.notifications.warn(`${target.name} has no valid rezzed program selected.`);
+        return [];
+      }
+    }
+
     declarations.push(await buildAttackDeclaration(attacker, target, weapon, {
       groupAttackId,
       groupTargetIds,
       groupIndex: index,
       groupTotalTargets: targets.length,
-    }, { skipDefenderPrompt }));
+    }, { skipDefenderPrompt, targetProgram }));
   }
 
   return declarations;
 }
 
-async function buildAttackDeclaration(attacker, target, weapon, group, { skipDefenderPrompt = false } = {}) {
-  const view = await buildWeaponView(weapon, attacker, target);
+async function buildAttackDeclaration(attacker, target, weapon, group, {
+  skipDefenderPrompt = false,
+  targetProgram = null,
+} = {}) {
+  const view = await buildWeaponView(weapon, attacker, target, { targetProgram });
   if (!view.dv && !isNetrunningAttack(weapon)) {
     ui.notifications.warn(view.reason || "Could not calculate DV for this weapon.");
   }
@@ -636,6 +1124,12 @@ async function buildAttackDeclaration(attacker, target, weapon, group, { skipDef
     targetActorId: target.actor.id,
     targetBaseActorId: target.document.actorId,
     targetName: target.name,
+    targetDisplayName: targetProgram ? `${target.name}: ${targetProgram.name}` : target.name,
+    targetProgramId: targetProgram?.id ?? "",
+    targetProgramUuid: targetProgram?.uuid ?? "",
+    targetProgramName: targetProgram?.name ?? "",
+    targetProgramClass: targetProgram?.program?.system?.class ?? "",
+    targetCyberdeckId: targetProgram?.cyberdeckId ?? "",
     weaponId: getItemId(weapon),
     weaponName: weapon.program?.name ?? (weapon.netAction === "zap" ? "Zap" : weapon.name),
     weaponTypeLabel: getWeaponTypeLabel(weapon),
@@ -677,7 +1171,10 @@ async function createAttackDeclarationMessage(attacker, declarations) {
 }
 
 async function renderAttackFlowContent(declarations, state = {}) {
-  const rows = (state.rows ?? declarations.map((entry) => ({ targetName: entry.targetName, dv: entry.dvLabel })))
+  const rows = (state.rows ?? declarations.map((entry) => ({
+    targetName: entry.targetDisplayName || entry.targetName,
+    dv: entry.dvLabel,
+  })))
     .map((row, index) => ({ ...row, defenseDetailId: `defense-${index}` }));
   const declarationContent = await renderTemplate(TEMPLATES.declaration, {
     declarations,
@@ -707,7 +1204,9 @@ function getRollDetails(roll) {
   };
   if (Object.hasOwn(roll, "statValue")) addComponent(roll.statName || "Característica", roll.statValue, { includeZero: true });
   if (Object.hasOwn(roll, "skillValue")) addComponent(roll.skillName || "Habilidad", roll.skillValue, { includeZero: true });
-  if (Object.hasOwn(roll, "roleValue")) addComponent(roll.roleName || "Interface", roll.roleValue, { includeZero: true });
+  if (Object.hasOwn(roll, "roleValue") && roll.includeInterface !== false) {
+    addComponent(roll.roleName || "Interface", roll.roleValue, { includeZero: true });
+  }
   addComponent("Suerte", roll.luck);
   for (const mod of roll.mods ?? []) {
     const source = game.i18n?.localize?.(mod.source) ?? mod.source ?? "Modificador";
@@ -745,7 +1244,7 @@ function getDamageRollDetails(roll) {
 
 function createOutcomeRows(outcomes, attackRoll, defenseDetails = new Map()) {
   return outcomes.map(({ choice, comparison, hit }) => ({
-    targetName: choice.targetName,
+    targetName: choice.targetDisplayName || choice.targetName,
     dv: choice.dv || "-",
     evasion: comparison.mode === "evasion" ? comparison.target : "-",
     attack: attackRoll.resultTotal,
@@ -754,7 +1253,30 @@ function createOutcomeRows(outcomes, attackRoll, defenseDetails = new Map()) {
     attackWins: hit,
     attackDetails: getRollDetails(attackRoll),
     defenseDetails: defenseDetails.get(choice.attackId) ?? null,
+    defenseLabel: comparison.label ?? "Defense",
   }));
+}
+
+function createDamageRows(hits, damage) {
+  let nativeApplicationIndex = 0;
+  return hits.map((hit) => {
+    const programDamage = Boolean(hit.targetProgramId);
+    const row = {
+      targetName: hit.targetDisplayName || hit.targetName,
+      damage,
+      programDamage,
+      targetSceneId: hit.targetSceneId ?? "",
+      targetTokenId: hit.targetTokenId ?? "",
+      targetActorId: hit.targetActorId ?? "",
+      targetProgramId: hit.targetProgramId ?? "",
+      targetCyberdeckId: hit.targetCyberdeckId ?? "",
+    };
+    if (!programDamage) {
+      row.nativeApplicationIndex = nativeApplicationIndex;
+      nativeApplicationIndex += 1;
+    }
+    return row;
+  });
 }
 
 async function updateAttackFlowMessage(data, patch = {}) {
@@ -1076,7 +1598,7 @@ async function resolveAttackGroup(groupId, entry) {
     const damageRoll = await rollDamageForHits(context, hits, attackRoll);
     if (damageRoll) await updateAttackFlowMessage(choices[0], {
       damageHtml: damageRoll.cprAutomatismHtml,
-      damageRows: hits.map((hit) => ({ targetName: hit.targetName, damage: damageRoll.resultTotal })),
+      damageRows: createDamageRows(hits, damageRoll.resultTotal),
       damageDetails: getDamageRollDetails(damageRoll),
     });
   } finally {
@@ -1191,7 +1713,7 @@ async function resolveNoEvade(data) {
     }], attackRoll);
     if (damageRoll) await updateAttackFlowMessage(data, {
       damageHtml: damageRoll.cprAutomatismHtml,
-      damageRows: [{ targetName: data.targetName, damage: damageRoll.resultTotal }],
+      damageRows: createDamageRows([data], damageRoll.resultTotal),
       damageDetails: getDamageRollDetails(damageRoll),
     });
   }
@@ -1237,6 +1759,9 @@ async function rollDefenseForData(data) {
 }
 
 async function rollNetrunningDefense(actor, defender, data) {
+  if (data.targetProgramId) {
+    return rollSelectedProgramDefense(actor, data);
+  }
   if (actor.type === "blackIce") return rollProgramStat(actor, defender, "def");
   if (actor.type === "demon" && typeof actor.createStatRoll === "function") {
     return rollProgramStat(actor, defender, "interface");
@@ -1257,6 +1782,35 @@ async function rollNetrunningDefense(actor, defender, data) {
   return finalizeNativeRoll(cprRoll, actor, cyberdeck, {
     tokens: [],
     itemId: cyberdeck.id,
+  });
+}
+
+async function rollSelectedProgramDefense(actor, data) {
+  const selection = findRezzedProgramOption(actor, data.targetProgramId);
+  if (!selection || (data.targetCyberdeckId && selection.cyberdeckId !== data.targetCyberdeckId)) {
+    ui.notifications.warn(`Could not find the selected rezzed program for ${data.targetName}.`);
+    return null;
+  }
+
+  const netRoleItem = getActiveNetRoleItem(actor) ?? {
+    system: {
+      mainRoleAbility: "Interface",
+      rank: 0,
+    },
+  };
+  const cprRoll = selection.cyberdeck.createRoll("cyberdeckProgram", actor, {
+    cyberdeckId: selection.cyberdeckId,
+    programId: selection.id,
+    executionType: "def",
+    netRoleItem,
+  });
+  if (!cprRoll) {
+    ui.notifications.warn(`Could not create native DEF roll for ${selection.name}.`);
+    return null;
+  }
+  return finalizeNativeRoll(cprRoll, actor, selection.cyberdeck, {
+    tokens: [],
+    itemId: selection.id,
   });
 }
 
@@ -1333,7 +1887,7 @@ async function resolveAgainstEvasion(data) {
     }], attackRoll);
     if (damageRoll) await updateAttackFlowMessage(defendedData, {
       damageHtml: damageRoll.cprAutomatismHtml,
-      damageRows: [{ targetName: defendedData.targetName, damage: damageRoll.resultTotal }],
+      damageRows: createDamageRows([defendedData], damageRoll.resultTotal),
       damageDetails: getDamageRollDetails(damageRoll),
     });
   }
@@ -1403,8 +1957,9 @@ async function rollNetrunningDamage(context, hits) {
   const hit = hits[0];
   const cprRoll = await createNetrunningDamageRoll(context, hit);
   if (!cprRoll) return null;
+  const tokenHits = hits.filter((entry) => !entry.targetProgramId);
   return finalizeNativeRoll(cprRoll, context.actor, context.rollItem ?? context.weapon, {
-    tokens: await getDamageTokensForHits(hits),
+    tokens: await getDamageTokensForHits(tokenHits),
     itemId: context.rollItem?.id ?? context.weapon?.id ?? hit.weaponId,
   });
 }
@@ -1417,13 +1972,6 @@ async function createNetrunningDamageRoll(context, hit) {
     }
     const flags = getSystemFlags(context.token?.document ?? context.token ?? context.actor?.token);
     return context.actor.createDamageRoll(flags.programUUID, flags.netrunnerTokenId, flags.sceneId);
-  }
-
-  if (hit.netAction === "program" && await shouldUseBlackIceDamageRoll(hit)) {
-    const target = await resolveToken(hit.targetSceneId, hit.targetTokenId, hit.targetActorId);
-    if (typeof target?.actor?.createDamageRoll === "function") {
-      return target.actor.createDamageRoll(hit.programUuid || context.program?.uuid, hit.attackerTokenId, hit.attackerSceneId);
-    }
   }
 
   const netRoleItem = getActiveNetRoleItem(context.actor);
@@ -1442,12 +1990,21 @@ async function createNetrunningDamageRoll(context, hit) {
     });
   }
 
-  return context.cyberdeck.createRoll("cyberdeckProgram", context.actor, {
+  const cprRoll = context.cyberdeck.createRoll("cyberdeckProgram", context.actor, {
     cyberdeckId: context.cyberdeck.id,
     programId: hit.programId,
     executionType: "damage",
     netRoleItem,
   });
+  if (cprRoll) {
+    const targetIsBlackIce = await shouldUseBlackIceDamageRoll(hit);
+    cprRoll.formula = getProgramDamageFormula(
+      context.program,
+      targetIsBlackIce ? { type: "blackIce" } : null,
+      hit.targetProgramClass,
+    );
+  }
+  return cprRoll;
 }
 
 async function shouldUseBlackIceDamageRoll(hit) {
@@ -1780,7 +2337,9 @@ function getDefenseSkillNames(data) {
 }
 
 function getDefenseLabel(data) {
-  if (data?.defenderAction === "net-defense") return "Netrunning Defense";
+  if (data?.defenderAction === "net-defense") {
+    return data.targetProgramName ? `${data.targetProgramName} DEF` : "Netrunning Defense";
+  }
   return data?.defenderAction === "concentration" ? "Concentration" : "Evasion";
 }
 
@@ -2235,6 +2794,7 @@ function getCollectionValues(collection) {
   if (Array.isArray(collection)) return collection;
   if (Array.isArray(collection.contents)) return collection.contents;
   if (typeof collection.values === "function") return Array.from(collection.values());
+  if (typeof collection[Symbol.iterator] === "function") return Array.from(collection);
   return [];
 }
 
@@ -2348,6 +2908,7 @@ export {
   applyAimedLocation,
   applyAutofireMultiplier,
   clampAutofireMultiplier,
+  createDamageRows,
   createPublicApi,
   getAimedDamageLocation,
   getAutofireHitMultiplier,
@@ -2368,6 +2929,9 @@ export {
   getCyberdecks,
   getHighestAutofireMultiplier,
   getInstalledPrograms,
+  getRezzedPrograms,
+  getRezzedProgramOptions,
+  getProgramTargetPromptData,
   getNetrunningAttackOptions,
   getNetrunningDamageLabel,
   getNetrunningAttackSkillLabel,
@@ -2376,6 +2940,8 @@ export {
   hasDiwakoResultTraits,
   isNetrunningAttack,
   isNetrunningAttackerProgram,
+  isNetrunnerActor,
+  isAntiProgramAttack,
   isNetrunningDeclaration,
   isDiwakoCpredAdditionsActive,
   isSuppressibleDiwakoResultContent,
@@ -2392,10 +2958,16 @@ export {
   getWeaponTypeLabel,
   inferDvTableName,
   formatCamelCase,
+  isCombatSkillTitle,
+  isCombatUplinkTracker,
   normalizeAimedLocation,
   normalizeDefenderAction,
   normalizePublicAttackRequest,
   normalizeTargetList,
+  normalizeTargetProgramSelections,
+  needsProgramTargetPrompt,
+  findRezzedProgramOption,
+  applyProgramDamage,
   prepareAttackDeclarations,
   getProgramDamageFormula,
   shouldSkipDefenderPrompt,

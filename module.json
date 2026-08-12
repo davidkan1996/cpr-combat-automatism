@@ -2,11 +2,11 @@
   "id": "cpr-combat-automatism",
   "title": "CPR Combat Automatism",
   "description": "Guided Cyberpunk RED attack flow with weapon selection, DV lookup, defender evasion choice, and native CPR rolls.",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "socket": true,
   "url": "https://github.com/davidkan1996/cpr-combat-automatism",
-  "manifest": "https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.11/module.json",
-  "download": "https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.11/cpr-combat-automatism.zip",
+  "manifest": "https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.12/module.json",
+  "download": "https://github.com/davidkan1996/cpr-combat-automatism/releases/download/v0.1.12/cpr-combat-automatism.zip",
   "compatibility": {
     "minimum": 12,
     "verified": 12,
@@ -23,8 +23,8 @@
         "id": "cyberpunk-red-core",
         "type": "system",
         "compatibility": {
-          "minimum": "v0.92.4",
-          "verified": "v0.92.4"
+          "minimum": "v0.92.5",
+          "verified": "v0.92.5"
         }
       }
     ]

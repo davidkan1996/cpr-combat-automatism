@@ -1,0 +1,32 @@
+<form class="cpr-af cpr-af-dialog">
+  <div class="cpr-af-summary">
+    <div><span>Atacante</span><strong>{{attackerName}}</strong></div>
+    <div><span>Ataque</span><strong>{{attackName}}</strong></div>
+  </div>
+
+  <div class="cpr-af-program-targets" data-cpr-af-program-targets>
+    {{#each programTargets as |target|}}
+      <div class="cpr-af-program-target">
+        <label for="cpr-af-api-target-program-{{target.targetTokenId}}">
+          Programa objetivo
+          <small>{{target.targetName}}</small>
+        </label>
+        <select
+          id="cpr-af-api-target-program-{{target.targetTokenId}}"
+          data-cpr-af-target-program
+          data-cpr-af-target-token="{{target.targetTokenId}}"
+          data-cpr-af-has-programs="{{target.hasPrograms}}"
+        >
+          {{#each target.programs as |program|}}
+            <option value="{{program.value}}" {{#if program.selected}}selected{{/if}}>
+              {{program.label}}
+            </option>
+          {{/each}}
+        </select>
+        {{#unless target.hasPrograms}}
+          <p class="cpr-af-warning">El objetivo no tiene programas rezzeados.</p>
+        {{/unless}}
+      </div>
+    {{/each}}
+  </div>
+</form>

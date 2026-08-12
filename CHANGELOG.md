@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.12
+
+- Added rezzed-program target selection for anti-program attacks against Netrunners.
+- Used the selected program's native DEF roll instead of the target Netrunner's Interface defense.
+- Applied anti-program damage to the selected program's REZ instead of the target Netrunner.
+- Added a program-only target prompt when external integrations provide a preselected anti-program attack.
+- Used the attacking cyberdeck's native program damage rollcard against external Black ICE targets, with Black ICE damage selected by default.
+- Removed Interface from unified roll breakdowns when the native program defense roll excludes it.
+- Added contextual chat palettes managed centrally by CPR Combat Automatism.
+- Kept attacks, initiative, damage, combat skills and combat requests from CPR Dice Uplink red.
+- Styled non-combat skill, role and CPR Dice Uplink requests cyan.
+- Styled Interface, program, Quickhack and other netrunning rolls yellow.
+- Made optional CPR Dice Uplink and CPR Quickhacks detection safe when either module is absent.
+- Added explicit compatibility with public/whisper cards and Haradan UI's high-specificity chat styles.
+- Updated the minimum supported Cyberpunk RED CORE version to v0.92.5.
+
 ## v0.1.11
 
 - Unified each attack flow into one progressively updated chat message instead of separate declaration, result and damage messages.
