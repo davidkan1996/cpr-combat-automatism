@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.13
+
+- Fixed physical attack and damage cards being incorrectly styled as yellow netrunning rolls.
+- Removed generic subtitle-based netrunning detection and replaced it with program-specific markers.
+- Prioritized explicit CPR Combat Automatism and CPR Dice Uplink roll metadata over incidental card markup.
+- Added regression coverage for physical combat, combat skills, neutral skills and native program damage palettes.
+
 ## v0.1.12
 
 - Added rezzed-program target selection for anti-program attacks against Netrunners.

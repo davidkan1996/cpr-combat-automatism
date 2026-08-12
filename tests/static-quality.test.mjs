@@ -18,6 +18,13 @@ test("main script has no debug console logging", () => {
   assert.equal(/\bconsole\.log\s*\(/.test(main), false);
 });
 
+test("netrunning chat detection does not rely on generic rollcard subtitles", () => {
+  assert.equal(
+    /hasChatElement\(html, \["\.rollcard-subtitle-2-center"\]\)/.test(main),
+    false,
+  );
+});
+
 test("main script has no dynamic code execution or raw DOM HTML sinks", () => {
   const unsafePatterns = [
     "\\bev" + "al\\s*\\(",

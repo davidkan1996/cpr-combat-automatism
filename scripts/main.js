@@ -68,6 +68,14 @@ const NETRUNNING_ROLL_TITLE_KEYS = [
   "CPR.global.role.netrunner.interfaceAbility.virus",
   "CPR.global.role.netrunner.interfaceAbility.zap",
 ];
+const NETRUNNING_PROGRAM_CLASS_KEYS = [
+  "CPR.global.programClass.antiPersonnelAttacker",
+  "CPR.global.programClass.antiProgramAttacker",
+  "CPR.global.programClass.blackice",
+  "CPR.global.programClass.booster",
+  "CPR.global.programClass.defender",
+  "CPR.global.programClass.quickhack",
+];
 const SHOTGUN_DV_TABLES = {
   shell: "DV Shotgun (Shell)",
   slug: "DV Shotgun (Slug)",
@@ -397,32 +405,43 @@ function collectChatStyleElements(elements, source) {
 }
 
 function classifyChatMessage(message, html) {
+  const declarations = getChatAttackDeclarations(message);
+  if (declarations.length > 0) {
+    return declarations.some((entry) => entry?.weapon?.netAction || entry?.netAction)
+      ? "netrunning"
+      : "combat";
+  }
+
+  const uplinkTracker = message.getFlag?.("cpr-dice-uplink", "tracker");
+  if (uplinkTracker) return isCombatUplinkTracker(uplinkTracker) ? "combat" : "neutral";
+
   if (isNetrunningChatMessage(message, html)) return "netrunning";
   if (isCombatChatMessage(message, html)) return "combat";
   if (isNeutralChatMessage(message, html)) return "neutral";
   return null;
 }
 
-function isNetrunningChatMessage(message, html) {
-  const declarations = message.getFlag?.(MODULE_ID, "attackDeclarations")
-    ?? [message.getFlag?.(MODULE_ID, "attackDeclaration")].filter(Boolean);
-  if (declarations.some((entry) => entry?.weapon?.netAction || entry?.netAction)) return true;
+function getChatAttackDeclarations(message) {
+  const declarations = message.getFlag?.(MODULE_ID, "attackDeclarations");
+  if (Array.isArray(declarations) && declarations.length > 0) return declarations.filter(Boolean);
+  const declaration = message.getFlag?.(MODULE_ID, "attackDeclaration");
+  return declaration ? [declaration] : [];
+}
+
+function isNetrunningChatMessage(_message, html) {
   if (hasChatElement(html, [
     ".cpr-qh-card",
     "[data-program-id]",
     "[data-cpr-af-apply-program-damage]",
+    "[data-action='applyDamage'][data-damage-location='brain'][data-ablation='0']:not([data-damage-lethal])",
   ])) return true;
-  if (hasChatElement(html, [".rollcard-subtitle-2-center"])
-    && !hasChatElement(html, ["[data-action='rollDamage']"])) return true;
+  if (hasNetrunningProgramClass(html)) return true;
   const rollTitle = getNativeRollTitle(html);
   return Boolean(rollTitle) && getLocalizedSlugs(NETRUNNING_ROLL_TITLE_KEYS)
     .has(slugifyChatLabel(rollTitle));
 }
 
-function isCombatChatMessage(message, html) {
-  if (isCombatUplinkTracker(message.getFlag?.("cpr-dice-uplink", "tracker"))) return true;
-  if (message.getFlag?.(MODULE_ID, "attackDeclaration")
-    || message.getFlag?.(MODULE_ID, "attackDeclarations")) return true;
+function isCombatChatMessage(_message, html) {
   if (hasChatElement(html, [
     ".cpr-af-card",
     ".cpr-af-declaration",
@@ -433,8 +452,7 @@ function isCombatChatMessage(message, html) {
   return skillTitle ? isCombatSkillTitle(skillTitle) : false;
 }
 
-function isNeutralChatMessage(message, html) {
-  if (message.getFlag?.("cpr-dice-uplink", "tracker")) return true;
+function isNeutralChatMessage(_message, html) {
   if (hasChatElement(html, [".cpr-uplink-card", ".cpr-uplink-tracker"])) return true;
   return Boolean(getNativeSkillTitle(html)) || hasLocalizedRollSubtitle(html, [
     "CPR.global.itemTypes.skill",
@@ -455,6 +473,17 @@ function hasLocalizedRollSubtitle(html, keys) {
   const labels = keys.map((key) => game.i18n.localize(key)).filter(Boolean);
   return html.find?.(".rollcard .text-small")?.toArray?.()
     ?.some((element) => labels.includes(element.textContent?.trim())) ?? false;
+}
+
+function hasNetrunningProgramClass(html) {
+  const classSlugs = getLocalizedSlugs(NETRUNNING_PROGRAM_CLASS_KEYS);
+  return html.find?.(".rollcard .rollcard-subtitle-2-center")?.toArray?.()
+    ?.some((element) => {
+      const subtitle = slugifyChatLabel(element.textContent);
+      return [...classSlugs].some((classSlug) => (
+        subtitle === classSlug || subtitle.endsWith(`-${classSlug}`)
+      ));
+    }) ?? false;
 }
 
 function hasChatElement(html, selectors) {
@@ -2958,6 +2987,7 @@ export {
   getWeaponTypeLabel,
   inferDvTableName,
   formatCamelCase,
+  classifyChatMessage,
   isCombatSkillTitle,
   isCombatUplinkTracker,
   normalizeAimedLocation,

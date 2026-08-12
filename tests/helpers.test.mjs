@@ -42,6 +42,18 @@ globalThis.Hooks = {
 };
 globalThis.game = {
   system: { id: "cyberpunk-red-core" },
+  i18n: {
+    localize: (key) => ({
+      "CPR.global.itemTypes.skill": "Skill",
+      "CPR.rolls.roleAbility": "Role Ability",
+      "CPR.global.programClass.antiPersonnelAttacker": "Anti-Personnel",
+      "CPR.global.programClass.antiProgramAttacker": "Anti-Program",
+      "CPR.global.programClass.blackice": "Black ICE",
+      "CPR.global.programClass.booster": "Booster",
+      "CPR.global.programClass.defender": "Defender",
+      "CPR.global.programClass.quickhack": "Quickhack",
+    }[key] ?? key),
+  },
   user: users[0],
   users,
   actors,
@@ -69,6 +81,29 @@ globalThis.CONST = {
 };
 
 const __test__ = await import("../scripts/main.js");
+
+function makeChatMessage(flags = {}) {
+  return {
+    getFlag: (scope, key) => flags[`${scope}.${key}`],
+  };
+}
+
+function makeChatHtml({ selectors = [], rollTitle = "", subtitles = [], programClasses = [] } = {}) {
+  return {
+    find: (selector) => {
+      const textValues = selector === ".rollcard .text-small"
+        ? subtitles
+        : selector === ".rollcard .rollcard-subtitle-2-center"
+          ? programClasses
+          : [];
+      return {
+        length: selectors.includes(selector) ? 1 : textValues.length,
+        first: () => ({ text: () => rollTitle }),
+        toArray: () => textValues.map((textContent) => ({ textContent })),
+      };
+    },
+  };
+}
 
 const declaration = {
   attackId: "attack-1",
@@ -135,6 +170,46 @@ test("Dice Uplink trackers inherit the requested roll category", () => {
     skillName: "Stealth",
     label: "Stealth",
   })), false);
+});
+
+test("chat styling does not mistake ordinary combat cards for netrunning", () => {
+  const html = makeChatHtml({
+    selectors: [".rollcard-subtitle-2-center", "[data-action='applyDamage']"],
+    programClasses: ["Armor Piercing"],
+  });
+
+  assert.equal(__test__.classifyChatMessage(makeChatMessage(), html), "combat");
+});
+
+test("explicit attack flags take priority over incidental card markup", () => {
+  const html = makeChatHtml({ selectors: ["[data-program-id]"] });
+  const physicalAttack = makeChatMessage({
+    "cpr-combat-automatism.attackDeclaration": { weapon: { netAction: false } },
+  });
+  const netAttack = makeChatMessage({
+    "cpr-combat-automatism.attackDeclaration": { weapon: { netAction: true } },
+  });
+
+  assert.equal(__test__.classifyChatMessage(physicalAttack, html), "combat");
+  assert.equal(__test__.classifyChatMessage(netAttack, makeChatHtml()), "netrunning");
+});
+
+test("native program damage remains netrunning without using generic subtitles", () => {
+  const html = makeChatHtml({
+    selectors: [
+      "[data-action='applyDamage'][data-damage-location='brain'][data-ablation='0']:not([data-damage-lethal])",
+      "[data-action='applyDamage']",
+    ],
+  });
+
+  assert.equal(__test__.classifyChatMessage(makeChatMessage(), html), "netrunning");
+});
+
+test("native combat and neutral skills keep their own categories", () => {
+  const skillHtml = (rollTitle) => makeChatHtml({ rollTitle, subtitles: ["Skill"] });
+
+  assert.equal(__test__.classifyChatMessage(makeChatMessage(), skillHtml("Brawling")), "combat");
+  assert.equal(__test__.classifyChatMessage(makeChatMessage(), skillHtml("Stealth")), "neutral");
 });
 
 test("public API exposes attack preparation and resolution methods", () => {
